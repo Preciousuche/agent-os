@@ -156,9 +156,7 @@ export function RouterSection({
       visibleTiers.forEach(([name, tier]) => {
         const row = rowFor(name, tier)
         if (row.model) {
-          const match = allModels.find(
-            (m) => m.provider === row.provider && m.id === row.model,
-          )
+          const match = allModels.find((m) => m.provider === row.provider && m.id === row.model)
           if (!match) {
             unknownModels.push(row.model)
           }
@@ -168,7 +166,7 @@ export function RouterSection({
     if (unknownModels.length > 0) {
       toast.warning(
         `Warning: Model ID${unknownModels.length > 1 ? 's' : ''} not in catalog: ${unknownModels.join(', ')}`,
-        { id: 'setup-router-warning' }
+        { id: 'setup-router-warning' },
       )
     }
 

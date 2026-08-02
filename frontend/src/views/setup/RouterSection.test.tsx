@@ -44,10 +44,34 @@ function catalogWithTiers(tiers: Record<string, Record<string, unknown>>): Catal
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 const MOCK_MODELS = [
-  { id: 'gpt-4o', name: 'GPT-4o', provider: 'openai', contextWindow: 128000, capabilities: ['chat', 'tools'] },
-  { id: 'gpt-4o-mini', name: 'GPT-4o Mini', provider: 'openai', contextWindow: 128000, capabilities: ['chat', 'tools'] },
-  { id: 'gpt-image-1', name: 'GPT Image 1', provider: 'openai', contextWindow: 128000, capabilities: ['chat', 'vision'] },
-  { id: 'claude-3-opus', name: 'Claude 3 Opus', provider: 'anthropic', contextWindow: 200000, capabilities: ['chat'] },
+  {
+    id: 'gpt-4o',
+    name: 'GPT-4o',
+    provider: 'openai',
+    contextWindow: 128000,
+    capabilities: ['chat', 'tools'],
+  },
+  {
+    id: 'gpt-4o-mini',
+    name: 'GPT-4o Mini',
+    provider: 'openai',
+    contextWindow: 128000,
+    capabilities: ['chat', 'tools'],
+  },
+  {
+    id: 'gpt-image-1',
+    name: 'GPT Image 1',
+    provider: 'openai',
+    contextWindow: 128000,
+    capabilities: ['chat', 'vision'],
+  },
+  {
+    id: 'claude-3-opus',
+    name: 'Claude 3 Opus',
+    provider: 'anthropic',
+    contextWindow: 200000,
+    capabilities: ['chat'],
+  },
 ]
 
 const mockRpc = {
@@ -223,9 +247,7 @@ describe('RouterSection', () => {
     const catalog = catalogWithTiers({
       c0: { provider: 'openai', model: 'unknown-model-id-123' },
     })
-    catalog.providers = [
-      { providerId: 'openai', label: 'OpenAI', runtimeSupported: true },
-    ]
+    catalog.providers = [{ providerId: 'openai', label: 'OpenAI', runtimeSupported: true }]
 
     renderSection(catalog, onSave)
 

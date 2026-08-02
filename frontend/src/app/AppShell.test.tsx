@@ -52,7 +52,9 @@ function renderAt(path: string) {
 describe('routes', () => {
   it('renders a real lazily loaded registered view', async () => {
     renderAt('/sessions')
-    expect(await screen.findByRole('heading', { name: 'Sessions' }, { timeout: 5000 })).toBeInTheDocument()
+    expect(
+      await screen.findByRole('heading', { name: 'Sessions' }, { timeout: 5000 }),
+    ).toBeInTheDocument()
   })
 
   it('registers every major view as a route-object lazy module', () => {

@@ -135,9 +135,27 @@ const CONFIG = {
 }
 
 const MOCK_MODELS = [
-  { id: 'gpt-4o', name: 'GPT-4o', provider: 'openai', contextWindow: 128000, capabilities: ['chat', 'tools'] },
-  { id: 'gpt-4o-mini', name: 'GPT-4o Mini', provider: 'openai', contextWindow: 128000, capabilities: ['chat', 'tools'] },
-  { id: 'dall-e', name: 'Dall-E', provider: 'openai', contextWindow: 128000, capabilities: ['chat', 'vision'] },
+  {
+    id: 'gpt-4o',
+    name: 'GPT-4o',
+    provider: 'openai',
+    contextWindow: 128000,
+    capabilities: ['chat', 'tools'],
+  },
+  {
+    id: 'gpt-4o-mini',
+    name: 'GPT-4o Mini',
+    provider: 'openai',
+    contextWindow: 128000,
+    capabilities: ['chat', 'tools'],
+  },
+  {
+    id: 'dall-e',
+    name: 'Dall-E',
+    provider: 'openai',
+    contextWindow: 128000,
+    capabilities: ['chat', 'vision'],
+  },
 ]
 
 function statusFor(overrides: Record<string, unknown> = {}) {
