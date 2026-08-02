@@ -134,6 +134,12 @@ const CONFIG = {
   memory: { curated_memory_char_limit: 4000, curated_user_char_limit: 2000, inject_limit: 6400 },
 }
 
+const MOCK_MODELS = [
+  { id: 'gpt-4o', name: 'GPT-4o', provider: 'openai', contextWindow: 128000, capabilities: ['chat', 'tools'] },
+  { id: 'gpt-4o-mini', name: 'GPT-4o Mini', provider: 'openai', contextWindow: 128000, capabilities: ['chat', 'tools'] },
+  { id: 'dall-e', name: 'Dall-E', provider: 'openai', contextWindow: 128000, capabilities: ['chat', 'vision'] },
+]
+
 function statusFor(overrides: Record<string, unknown> = {}) {
   return {
     needsOnboarding: false,
@@ -158,6 +164,7 @@ function wireCalls(status: Record<string, unknown> = statusFor()) {
     if (method === 'onboarding.status') return Promise.resolve(status)
     if (method === 'config.get') return Promise.resolve(CONFIG)
     if (method === 'doctor.memory.status') return Promise.resolve(null)
+    if (method === 'models.list') return Promise.resolve(MOCK_MODELS)
     return Promise.resolve({})
   })
 }

@@ -3,6 +3,9 @@
 // editable tier table. Save via onboarding.router.configure, gated on the
 // provider being saved (effective === configured).
 import { useMemo, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { toast } from 'sonner'
+import { useRpc } from '@/app/providers'
 import { Button } from '@/components/ui/button'
 import { PanelHead, SetupCheckbox, SetupSelect } from './parts'
 import {
@@ -24,6 +27,18 @@ import {
 } from './logic'
 
 const THINKING_LEVELS = ['', 'off', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh']
+
+interface ModelSpec {
+  id: string
+  name: string
+  provider: string
+  contextWindow: number
+  capabilities: string[]
+  pricing?: {
+    inputPer1k: number
+    outputPer1k: number
+  }
+}
 
 interface TierRowState {
   provider: string
@@ -54,6 +69,23 @@ export function RouterSection({
   saving: boolean
 }) {
   const router = config.agentos_router || {}
+  const rpc = useRpc()
+  const providers = useMemo(
+    () => (catalog.providers || []).filter((p) => p.runtimeSupported),
+    [catalog.providers],
+  )
+
+  const modelsQuery = useQuery<ModelSpec[]>({
+    queryKey: ['setup', 'models'],
+    queryFn: async () => {
+      await rpc.waitForConnection()
+      const data = await rpc.call<unknown>('models.list', {})
+      return (data as ModelSpec[]) ?? []
+    },
+    refetchOnWindowFocus: false,
+  })
+  const allModels = Array.isArray(modelsQuery.data) ? modelsQuery.data : []
+
   const provider = effectiveProviderFn(status, config, draftProvider)
   const configured = configuredProviderFn(status, config)
   const canSave = Boolean(provider && provider === configured)
@@ -118,6 +150,28 @@ export function RouterSection({
 
   const collectAndSave = () => {
     if (!canSave) return
+
+    const unknownModels: string[] = []
+    if (allModels.length > 0) {
+      visibleTiers.forEach(([name, tier]) => {
+        const row = rowFor(name, tier)
+        if (row.model) {
+          const match = allModels.find(
+            (m) => m.provider === row.provider && m.id === row.model,
+          )
+          if (!match) {
+            unknownModels.push(row.model)
+          }
+        }
+      })
+    }
+    if (unknownModels.length > 0) {
+      toast.warning(
+        `Warning: Model ID${unknownModels.length > 1 ? 's' : ''} not in catalog: ${unknownModels.join(', ')}`,
+        { id: 'setup-router-warning' }
+      )
+    }
+
     const judgeModel = resolveJudgeModelParam(judge, judgeLoaded, judgeIsLocal)
     const params = buildRouterConfigureParams({
       sel: mode,
@@ -219,6 +273,14 @@ export function RouterSection({
             const row = rowFor(name, tier)
             const isImageModel = name === 'image_model'
             const supportsImage = isImageModel || row.supportsImage
+            const listId = `datalist-${name}`
+            const filteredModels = allModels.filter((m) => {
+              if (m.provider !== row.provider) return false
+              if (isImageModel) {
+                return m.capabilities?.includes('vision')
+              }
+              return true
+            })
             return (
               <div className="setup-tier-table__row" role="row" key={name}>
                 <div className="setup-tier-table__cell setup-tier-table__cell--tier" role="cell">
@@ -231,11 +293,25 @@ export function RouterSection({
                   <span className="setup-tier-table__mobile-label" aria-hidden="true">
                     Provider
                   </span>
-                  <input
+                  <SetupSelect
                     aria-label={`${name} provider`}
                     value={row.provider}
                     onChange={(e) => setRow(name, tier, { provider: e.target.value })}
-                  />
+                  >
+                    <option value="" disabled>
+                      Choose a provider
+                    </option>
+                    {providers.map((p) => (
+                      <option key={p.providerId} value={p.providerId}>
+                        {p.label || p.providerId}
+                      </option>
+                    ))}
+                    {row.provider && !providers.some((p) => p.providerId === row.provider) && (
+                      <option key={row.provider} value={row.provider}>
+                        {row.provider}
+                      </option>
+                    )}
+                  </SetupSelect>
                 </div>
                 <div className="setup-tier-table__cell setup-tier-table__cell--model" role="cell">
                   <span className="setup-tier-table__mobile-label" aria-hidden="true">
@@ -244,8 +320,34 @@ export function RouterSection({
                   <input
                     aria-label={`${name} model`}
                     value={row.model}
+                    list={listId}
+                    autoComplete="off"
                     onChange={(e) => setRow(name, tier, { model: e.target.value })}
                   />
+                  <datalist id={listId}>
+                    {filteredModels.map((m) => {
+                      const ctxText =
+                        Number(m.contextWindow) > 0
+                          ? `${Math.round(Number(m.contextWindow) / 1000)}k ctx`
+                          : ''
+                      const input1M = m.pricing ? (Number(m.pricing.inputPer1k) || 0) * 1000 : 0
+                      const output1M = m.pricing ? (Number(m.pricing.outputPer1k) || 0) * 1000 : 0
+                      const pricingText =
+                        input1M || output1M
+                          ? `$${input1M.toFixed(2)}/$${output1M.toFixed(2)} per 1M`
+                          : ''
+                      const labelParts = [ctxText, pricingText].filter(Boolean)
+                      const optionLabel =
+                        labelParts.length > 0
+                          ? `${m.name || m.id} (${labelParts.join(' · ')})`
+                          : m.name || m.id
+                      return (
+                        <option key={m.id} value={m.id}>
+                          {optionLabel}
+                        </option>
+                      )
+                    })}
+                  </datalist>
                 </div>
                 <div className="setup-tier-table__cell" role="cell">
                   <span className="setup-tier-table__mobile-label" aria-hidden="true">
