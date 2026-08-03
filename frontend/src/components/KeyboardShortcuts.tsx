@@ -6,6 +6,7 @@ import React, {
   useState,
   useCallback,
   useId,
+  useMemo,
 } from 'react'
 import { AnimatePresence } from 'motion/react'
 import { X } from 'lucide-react'
@@ -82,7 +83,19 @@ export function formatShortcutKey(keyCombo: string): string {
 
 export function getEventCombo(e: KeyboardEvent | React.KeyboardEvent): string {
   const parts: string[] = []
-  const key = e.key.toLowerCase()
+
+  let key = (e.key || '').toLowerCase()
+  if (!key || key === 'unidentified') {
+    if (e.code) {
+      if (e.code.startsWith('Key') && e.code.length === 4) {
+        key = e.code.charAt(3).toLowerCase()
+      } else if (e.code.startsWith('Digit') && e.code.length === 6) {
+        key = e.code.charAt(5)
+      } else {
+        key = e.code.toLowerCase()
+      }
+    }
+  }
 
   if (e.metaKey || e.ctrlKey) {
     parts.push('mod')
@@ -92,12 +105,12 @@ export function getEventCombo(e: KeyboardEvent | React.KeyboardEvent): string {
   }
 
   // Only add 'shift' modifier if key itself isn't a symbol produced by shift (like '?')
-  // and e.key itself isn't 'Shift'.
-  if (e.shiftKey && e.key !== '?' && e.key !== 'Shift') {
+  // and key itself isn't 'shift'.
+  if (e.shiftKey && key !== '?' && key !== 'shift') {
     parts.push('shift')
   }
 
-  if (e.key !== 'Control' && e.key !== 'Meta' && e.key !== 'Alt' && e.key !== 'Shift') {
+  if (key !== 'control' && key !== 'meta' && key !== 'alt' && key !== 'shift') {
     parts.push(key)
   }
 
@@ -180,12 +193,15 @@ export function KeyboardShortcutProvider({ children }: { children: React.ReactNo
     return () => document.removeEventListener('keydown', handleKeyDown)
   }, [])
 
-  const contextValue = {
-    register,
-    shortcuts,
-    isHelpOpen,
-    setIsHelpOpen,
-  }
+  const contextValue = useMemo(
+    () => ({
+      register,
+      shortcuts,
+      isHelpOpen,
+      setIsHelpOpen,
+    }),
+    [register, shortcuts, isHelpOpen],
+  )
 
   return (
     <KeyboardShortcutContext.Provider value={contextValue}>
@@ -210,20 +226,30 @@ export function useKeyboardShortcut(config: KeyboardShortcut, handler: (e: Keybo
   }, [handler])
 
   const { key, description, category, allowInInputs, allowWithOverlays, documentationOnly } = config
+  const register = context?.register
 
   useEffect(() => {
-    if (!context) return
+    if (!register) return
 
     const stableHandler = (e: KeyboardEvent) => {
       handlerRef.current(e)
     }
 
-    return context.register(
+    return register(
       id,
       { key, description, category, allowInInputs, allowWithOverlays, documentationOnly },
       stableHandler,
     )
-  }, [context, id, key, description, category, allowInInputs, allowWithOverlays, documentationOnly])
+  }, [
+    register,
+    id,
+    key,
+    description,
+    category,
+    allowInInputs,
+    allowWithOverlays,
+    documentationOnly,
+  ])
 }
 
 function KeyboardShortcutHelpModal({

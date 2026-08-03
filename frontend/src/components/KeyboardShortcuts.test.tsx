@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { useState } from 'react'
 import { describe, expect, it } from 'vitest'
 import {
@@ -88,7 +88,7 @@ function TestComponent() {
 }
 
 describe('KeyboardShortcutProvider', () => {
-  it('registers and triggers a global shortcut', () => {
+  it('registers and triggers a global shortcut', async () => {
     render(
       <KeyboardShortcutProvider>
         <TestComponent />
@@ -105,10 +105,12 @@ describe('KeyboardShortcutProvider', () => {
     })
     document.dispatchEvent(event)
 
-    expect(screen.getByText('Pressed')).toBeInTheDocument()
+    await waitFor(() => {
+      expect(screen.getByText('Pressed')).toBeInTheDocument()
+    })
   })
 
-  it('toggles the help modal on "?" keydown', () => {
+  it('toggles the help modal on "?" keydown', async () => {
     render(
       <KeyboardShortcutProvider>
         <TestComponent />
@@ -126,7 +128,9 @@ describe('KeyboardShortcutProvider', () => {
     document.dispatchEvent(event)
 
     // Modal should be open and display the title and test description
-    expect(screen.getByText('Keyboard Shortcuts')).toBeInTheDocument()
+    await waitFor(() => {
+      expect(screen.getByText('Keyboard Shortcuts')).toBeInTheDocument()
+    })
     expect(screen.getByText('Test shortcut description')).toBeInTheDocument()
     expect(screen.getByText('Test Category')).toBeInTheDocument()
 
@@ -135,6 +139,8 @@ describe('KeyboardShortcutProvider', () => {
     fireEvent.click(closeBtn)
 
     // Modal should be closed
-    expect(screen.queryByText('Keyboard Shortcuts')).not.toBeInTheDocument()
+    await waitFor(() => {
+      expect(screen.queryByText('Keyboard Shortcuts')).not.toBeInTheDocument()
+    })
   })
 })

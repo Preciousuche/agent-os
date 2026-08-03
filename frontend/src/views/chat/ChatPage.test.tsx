@@ -5,6 +5,7 @@ import { focusManager, QueryClient, QueryClientProvider } from '@tanstack/react-
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { toast } from 'sonner'
 import { ChatPage } from './ChatPage'
+import { KeyboardShortcutProvider } from '@/components/KeyboardShortcuts'
 import * as logicModule from './logic'
 
 vi.mock('sonner', () => ({
@@ -94,8 +95,10 @@ function renderPage(initialEntry = '/chat') {
       <QueryClientProvider
         client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
       >
-        <ChatPage />
-        <LocationProbe />
+        <KeyboardShortcutProvider>
+          <ChatPage />
+          <LocationProbe />
+        </KeyboardShortcutProvider>
       </QueryClientProvider>
     </MemoryRouter>,
   )

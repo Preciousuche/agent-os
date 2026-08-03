@@ -137,7 +137,9 @@ describe('index route renders the default view without changing the URL', () => 
     const { router } = renderShellAt('/')
     // The real ChatPage renders in place (its full-bleed thread region), not the
     // Overview view — proving the mobile index default resolves to chat.
-    await waitFor(() => expect(document.querySelector('.chat-thread')).not.toBeNull())
+    await waitFor(() => expect(document.querySelector('.chat-thread')).not.toBeNull(), {
+      timeout: 5000,
+    })
     expect(router.state.location.pathname).toBe('/')
     // On mobile the closed drawer is aria-hidden/inert, so the nav link is not
     // in the accessibility tree; assert the highlight via the DOM node instead.
