@@ -3,6 +3,7 @@ import { ArrowUpIcon, PaperclipIcon, SlidersHorizontalIcon, SquareIcon, XIcon } 
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import { toast } from 'sonner'
 import { MAX_PENDING, sendButtonState, shouldAutofocusComposer } from './logic'
+import { useKeyboardShortcut } from '@/components/KeyboardShortcuts'
 
 /**
  * The chat command line (React).
@@ -167,6 +168,78 @@ export function Composer({
   const toolbarTriggerRef = useRef<HTMLButtonElement>(null)
   const toolbarCloseRef = useRef<HTMLButtonElement>(null)
   const reduceMotion = useReducedMotion()
+
+  // Register composer shortcuts for documentation
+  useKeyboardShortcut(
+    {
+      key: 'enter',
+      description: 'Send message',
+      category: 'Composer',
+      allowInInputs: true,
+      documentationOnly: true,
+    },
+    () => {},
+  )
+  useKeyboardShortcut(
+    {
+      key: 'shift+enter',
+      description: 'Insert newline',
+      category: 'Composer',
+      allowInInputs: true,
+      documentationOnly: true,
+    },
+    () => {},
+  )
+  useKeyboardShortcut(
+    {
+      key: 'escape',
+      description: 'Clear input / recover queue / abort turn',
+      category: 'Composer',
+      allowInInputs: true,
+      documentationOnly: true,
+    },
+    () => {},
+  )
+  useKeyboardShortcut(
+    {
+      key: 'alt+arrowup',
+      description: 'Pop the most-recent pending item into the composer for editing',
+      category: 'Composer',
+      allowInInputs: true,
+      documentationOnly: true,
+    },
+    () => {},
+  )
+  useKeyboardShortcut(
+    {
+      key: 'alt+arrowdown',
+      description: 'Enqueue the current composer text',
+      category: 'Composer',
+      allowInInputs: true,
+      documentationOnly: true,
+    },
+    () => {},
+  )
+  useKeyboardShortcut(
+    {
+      key: 'arrowup',
+      description: 'Walk backwards through sent history',
+      category: 'Composer',
+      allowInInputs: true,
+      documentationOnly: true,
+    },
+    () => {},
+  )
+  useKeyboardShortcut(
+    {
+      key: 'arrowdown',
+      description: 'Walk forward through sent history',
+      category: 'Composer',
+      allowInInputs: true,
+      documentationOnly: true,
+    },
+    () => {},
+  )
 
   // Close the composer-settings popover on an outside click / Escape (it
   // previously stayed open until the toolbar trigger was clicked again). Bound only

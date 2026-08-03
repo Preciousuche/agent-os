@@ -8,6 +8,7 @@ import { AnimatePresence } from 'motion/react'
 import { useRpc } from '@/app/providers'
 import { ShellHeaderPortal, ShellPrimaryActionPortal } from '@/app/ShellHeaderSlot'
 import { ModalShell } from '@/components/ModalShell'
+import { useKeyboardShortcut, formatShortcutKey } from '@/components/KeyboardShortcuts'
 import { Attachments, useAttachments } from './Attachments'
 import { Composer, type ComposerHandle } from './Composer'
 import {
@@ -524,37 +525,31 @@ export function ChatPage() {
     toast.info('Exported as Markdown')
   }, [containerRef, sessionKey])
 
-  const shortcutHint = /mac/i.test(navigator.userAgent) ? '⌘⇧O' : 'Ctrl+Shift+O'
+  const shortcutHint = formatShortcutKey('mod+shift+o')
 
-  // chat.js:2518-2539 `_onDocKeydown` — document-level keyboard shortcuts.
-  // Cmd/Ctrl+Shift+O mirrors the New chat button from anywhere in the app,
-  // while Escape keeps the legacy priority chain:
-  //   1. streaming         → abort the turn (which recovers pending).
-  //   2. pending non-empty → recover the whole queue into the composer.
-  // Visible overlays own their shortcuts, and Escape inside other editable
-  // targets remains handled by those elements. Unlike Escape, the New chat
-  // shortcut intentionally works even when focus is inside the composer or
-  // another editable field.
-  useEffect(() => {
-    const onDocKeydown = (e: KeyboardEvent) => {
-      if (e.defaultPrevented) return
-      const isNewChatShortcut = (e.metaKey || e.ctrlKey) && e.shiftKey && e.code === 'KeyO'
-      const isEscape = e.key === 'Escape'
-      if (!isNewChatShortcut && !isEscape) return
-      const hasOverlay = !!document.querySelector(
-        '.modal-backdrop, .chat-session-popover, .chat-session-actions-menu',
-      )
-      if (hasOverlay) return
-      if (isNewChatShortcut) {
-        e.preventDefault()
-        startNewChat()
-        return
-      }
-      const target = e.target as HTMLElement | null
-      const isEditable =
-        !!target &&
-        (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
-      if (isEditable) return
+  // Register New Chat shortcut with registry
+  useKeyboardShortcut(
+    {
+      key: 'mod+shift+o',
+      description: 'New chat',
+      category: 'Global',
+      allowInInputs: true,
+    },
+    (e) => {
+      e.preventDefault()
+      startNewChat()
+    },
+  )
+
+  // Register Escape shortcut with registry (global priority chain: abort streaming or recover pending queue)
+  useKeyboardShortcut(
+    {
+      key: 'escape',
+      description: 'Abort streaming turn / recover pending queue',
+      category: 'Global',
+      allowInInputs: false,
+    },
+    (e) => {
       if (busy) {
         e.preventDefault()
         abortAndRecover('webui_escape')
@@ -564,10 +559,8 @@ export function ChatPage() {
         e.preventDefault()
         pending.popAllIntoComposer()
       }
-    }
-    document.addEventListener('keydown', onDocKeydown)
-    return () => document.removeEventListener('keydown', onDocKeydown)
-  }, [busy, abortAndRecover, pending, startNewChat])
+    },
+  )
 
   return (
     <div className="chat-stage" onDrop={onDrop} onDragOver={onDragOver} onPaste={onPaste}>

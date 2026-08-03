@@ -6,6 +6,7 @@ import { useConnection } from '@/stores/connection'
 import { initTheme } from '@/stores/theme'
 import { approvalMonitor } from '@/services/approval-monitor'
 import type { RpcState } from '@/lib/ws-rpc'
+import { KeyboardShortcutProvider } from '@/components/KeyboardShortcuts'
 
 const WS_URL_KEY = 'agentos.wsUrl'
 const WS_TOKEN_KEY = 'agentos.wsToken'
@@ -89,7 +90,9 @@ export function AppProviders({ children }: { children: ReactNode }) {
   return (
     <BootstrapContext.Provider value={bootstrap}>
       <RpcContext.Provider value={rpc}>
-        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+        <QueryClientProvider client={queryClient}>
+          <KeyboardShortcutProvider>{children}</KeyboardShortcutProvider>
+        </QueryClientProvider>
       </RpcContext.Provider>
     </BootstrapContext.Provider>
   )
