@@ -70,10 +70,6 @@ export function RouterSection({
 }) {
   const router = config.agentos_router || {}
   const rpc = useRpc()
-  const providers = useMemo(
-    () => (catalog.providers || []).filter((p) => p.runtimeSupported),
-    [catalog.providers],
-  )
 
   const modelsQuery = useQuery<ModelSpec[]>({
     queryKey: ['setup', 'models'],
@@ -152,21 +148,45 @@ export function RouterSection({
     if (!canSave) return
 
     const unknownModels: string[] = []
-    if (allModels.length > 0) {
-      visibleTiers.forEach(([name, tier]) => {
-        const row = rowFor(name, tier)
-        if (row.model) {
-          const match = allModels.find((m) => m.provider === row.provider && m.id === row.model)
+    const unvalidatedTiers: string[] = []
+
+    visibleTiers.forEach(([name, tier]) => {
+      const row = rowFor(name, tier)
+      if (row.model) {
+        // Enforce the active provider when validating
+        const rowProvider = provider
+        const hasRpcModels = allModels.some((m) => m.provider === rowProvider)
+
+        if (hasRpcModels) {
+          const match = allModels.find((m) => m.provider === rowProvider && m.id === row.model)
           if (!match) {
             unknownModels.push(row.model)
           }
+        } else {
+          // Fall back to offline catalog judge profiles models
+          const judgeProfile = judgeProfiles[rowProvider] || {}
+          const fallbackModels = Array.isArray(judgeProfile.models) ? judgeProfile.models : []
+          if (fallbackModels.length > 0) {
+            if (!fallbackModels.includes(row.model)) {
+              unknownModels.push(row.model)
+            }
+          } else {
+            unvalidatedTiers.push(`${name} (${row.model})`)
+          }
         }
-      })
-    }
+      }
+    })
+
     if (unknownModels.length > 0) {
       toast.warning(
         `Warning: Model ID${unknownModels.length > 1 ? 's' : ''} not in catalog: ${unknownModels.join(', ')}`,
         { id: 'setup-router-warning' },
+      )
+    }
+    if (unvalidatedTiers.length > 0) {
+      toast.warning(
+        `Warning: Could not validate model ID${unvalidatedTiers.length > 1 ? 's' : ''} against catalog: ${unvalidatedTiers.join(', ')}`,
+        { id: 'setup-router-unvalidated-warning' },
       )
     }
 
@@ -176,7 +196,14 @@ export function RouterSection({
       defaultTier,
       judgeModel,
       pilotThresholdRaw: pilotThreshold,
-      tiers: visibleTiers.map(([name, tier]) => ({ tier: name, ...rowFor(name, tier) })),
+      tiers: visibleTiers.map(([name, tier]) => {
+        const row = rowFor(name, tier)
+        return {
+          tier: name,
+          ...row,
+          provider: provider, // Enforce active provider on save
+        }
+      }),
     })
     onSave(params)
   }
@@ -272,13 +299,23 @@ export function RouterSection({
             const isImageModel = name === 'image_model'
             const supportsImage = isImageModel || row.supportsImage
             const listId = `datalist-${name}`
-            const filteredModels = allModels.filter((m) => {
-              if (m.provider !== row.provider) return false
-              if (isImageModel) {
-                return m.capabilities?.includes('vision')
-              }
-              return true
-            })
+
+            let filteredModels = allModels.filter((m) => m.provider === provider)
+            if (filteredModels.length === 0) {
+              const judgeProfile = judgeProfiles[provider] || {}
+              const fallbackModels = Array.isArray(judgeProfile.models) ? judgeProfile.models : []
+              filteredModels = fallbackModels.map((modelId) => ({
+                id: modelId,
+                name: modelId,
+                provider: provider,
+                contextWindow: 0,
+                capabilities: isImageModel ? ['vision'] : ['chat'],
+              }))
+            }
+            if (isImageModel) {
+              filteredModels = filteredModels.filter((m) => m.capabilities?.includes('vision'))
+            }
+
             return (
               <div className="setup-tier-table__row" role="row" key={name}>
                 <div className="setup-tier-table__cell setup-tier-table__cell--tier" role="cell">
@@ -291,25 +328,7 @@ export function RouterSection({
                   <span className="setup-tier-table__mobile-label" aria-hidden="true">
                     Provider
                   </span>
-                  <SetupSelect
-                    aria-label={`${name} provider`}
-                    value={row.provider}
-                    onChange={(e) => setRow(name, tier, { provider: e.target.value })}
-                  >
-                    <option value="" disabled>
-                      Choose a provider
-                    </option>
-                    {providers.map((p) => (
-                      <option key={p.providerId} value={p.providerId}>
-                        {p.label || p.providerId}
-                      </option>
-                    ))}
-                    {row.provider && !providers.some((p) => p.providerId === row.provider) && (
-                      <option key={row.provider} value={row.provider}>
-                        {row.provider}
-                      </option>
-                    )}
-                  </SetupSelect>
+                  <code className="setup-provider-chip">{provider}</code>
                 </div>
                 <div className="setup-tier-table__cell setup-tier-table__cell--model" role="cell">
                   <span className="setup-tier-table__mobile-label" aria-hidden="true">
@@ -320,8 +339,17 @@ export function RouterSection({
                     value={row.model}
                     list={listId}
                     autoComplete="off"
+                    title={row.model}
                     onChange={(e) => setRow(name, tier, { model: e.target.value })}
                   />
+                  {filteredModels.length === 0 && (
+                    <small
+                      className="setup-hint"
+                      style={{ display: 'block', marginTop: '0.25rem' }}
+                    >
+                      No catalog models for {provider} — type an ID.
+                    </small>
+                  )}
                   <datalist id={listId}>
                     {filteredModels.map((m) => {
                       const ctxText =

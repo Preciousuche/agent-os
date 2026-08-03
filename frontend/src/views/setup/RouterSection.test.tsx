@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { toast } from 'sonner'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterSection } from './RouterSection'
 import type { Catalog } from './logic'
 
@@ -24,24 +25,27 @@ function catalogWithTiers(tiers: Record<string, Record<string, unknown>>): Catal
       defaultTier: 'c1',
       profiles: [
         {
-          // Keep the production gateway profile shape, including fields the
-          // editor does not consume.
           profileId: 'openai',
           providerId: 'openai',
           label: 'OpenAI',
+          tiers,
+        },
+        {
+          profileId: 'anthropic',
+          providerId: 'anthropic',
+          label: 'Anthropic',
           tiers,
         },
       ],
       judge: {
         profiles: {
           openai: { autoModel: 'gpt-4o-mini', models: ['gpt-4o-mini', 'gpt-4o'] },
+          anthropic: { autoModel: 'claude-3-opus', models: ['claude-3-opus'] },
         },
       },
     },
   }
 }
-
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 const MOCK_MODELS = [
   {
@@ -72,13 +76,22 @@ const MOCK_MODELS = [
     contextWindow: 200000,
     capabilities: ['chat'],
   },
+  {
+    id: 'claude-image-1',
+    name: 'Claude Image 1',
+    provider: 'anthropic',
+    contextWindow: 200000,
+    capabilities: ['chat', 'vision'],
+  },
 ]
+
+let mockModelsResponse: unknown = MOCK_MODELS
 
 const mockRpc = {
   waitForConnection: vi.fn().mockResolvedValue(undefined),
   call: vi.fn((method) => {
     if (method === 'models.list') {
-      return Promise.resolve(MOCK_MODELS)
+      return Promise.resolve(mockModelsResponse)
     }
     return Promise.resolve({})
   }),
@@ -88,7 +101,7 @@ vi.mock('@/app/providers', () => ({
   useRpc: () => mockRpc,
 }))
 
-function renderSection(catalog: Catalog, onSave = vi.fn()) {
+function renderSection(catalog: Catalog, onSave = vi.fn(), config = CONFIG, draftProvider = '') {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: {
@@ -99,7 +112,8 @@ function renderSection(catalog: Catalog, onSave = vi.fn()) {
   const props = {
     catalog,
     status: STATUS,
-    config: CONFIG,
+    config,
+    draftProvider,
     onSave,
     onBack: vi.fn(),
     onNext: vi.fn(),
@@ -118,10 +132,20 @@ function renderSection(catalog: Catalog, onSave = vi.fn()) {
           <RouterSection {...props} catalog={nextCatalog} />
         </QueryClientProvider>,
       ),
+    rerenderWithConfig: (nextConfig: typeof CONFIG) =>
+      result.rerender(
+        <QueryClientProvider client={queryClient}>
+          <RouterSection {...props} config={nextConfig} />
+        </QueryClientProvider>,
+      ),
   }
 }
 
 describe('RouterSection', () => {
+  afterEach(() => {
+    mockModelsResponse = MOCK_MODELS
+  })
+
   it('seeds tiers that appear in a later partial-catalog update without crashing', () => {
     const partialCatalog = catalogWithTiers({
       c0: { provider: 'openai', model: 'gpt-4o-mini' },
@@ -129,7 +153,7 @@ describe('RouterSection', () => {
     const view = renderSection(partialCatalog)
 
     expect(screen.getByLabelText('c0 model')).toHaveValue('gpt-4o-mini')
-    expect(screen.queryByLabelText('c1 provider')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('c1 model')).not.toBeInTheDocument()
 
     view.rerenderCatalog(
       catalogWithTiers({
@@ -139,7 +163,6 @@ describe('RouterSection', () => {
       }),
     )
 
-    expect(screen.getByLabelText('c1 provider')).toHaveValue('openai')
     expect(screen.getByLabelText('c1 model')).toHaveValue('gpt-4o')
     expect(screen.getByLabelText('image_model model')).toHaveValue('gpt-image-1')
   })
@@ -203,43 +226,52 @@ describe('RouterSection', () => {
       { providerId: 'anthropic', label: 'Anthropic', runtimeSupported: true },
     ]
 
-    renderSection(catalog)
+    const config = {
+      llm: { provider: 'openai', model: 'gpt-4o' },
+      agentos_router: { enabled: true, strategy: 'pilot-v1', default_tier: 'c1' },
+    }
 
-    const c0ProviderSelect = screen.getByLabelText('c0 provider')
-    expect(c0ProviderSelect).toHaveValue('openai')
+    const { rerenderWithConfig } = renderSection(catalog, vi.fn(), config)
 
     // Wait for the datalist options to be loaded from the RPC call
     await waitFor(() => {
       const c0Datalist = document.getElementById('datalist-c0') as HTMLDataListElement
       expect(c0Datalist).toBeInTheDocument()
       const c0Options = Array.from(c0Datalist.options).map((opt) => opt.value)
-      expect(c0Options).toContain('gpt-4o')
+      expect(c0Options).toContain('gpt-image-1')
     })
 
     const c0Datalist = document.getElementById('datalist-c0') as HTMLDataListElement
-    let c0Options = Array.from(c0Datalist.options).map((opt) => opt.value)
+    const c0Options = Array.from(c0Datalist.options).map((opt) => opt.value)
+    expect(c0Options).toContain('gpt-4o')
     expect(c0Options).toContain('gpt-4o-mini')
-    expect(c0Options).toContain('gpt-image-1')
     expect(c0Options).not.toContain('claude-3-opus')
 
-    fireEvent.change(c0ProviderSelect, { target: { value: 'anthropic' } })
-    expect(c0ProviderSelect).toHaveValue('anthropic')
-
-    // Wait for options to update for the new provider
-    await waitFor(() => {
-      const c0Options = Array.from(c0Datalist.options).map((opt) => opt.value)
-      expect(c0Options).toContain('claude-3-opus')
-    })
-
-    c0Options = Array.from(c0Datalist.options).map((opt) => opt.value)
-    expect(c0Options).not.toContain('gpt-4o')
-
+    // Verify image model capability filtering for OpenAI initially
     const imageDatalist = document.getElementById('datalist-image_model') as HTMLDataListElement
     expect(imageDatalist).toBeInTheDocument()
     const imageOptions = Array.from(imageDatalist.options).map((opt) => opt.value)
     expect(imageOptions).toContain('gpt-image-1')
     expect(imageOptions).not.toContain('gpt-4o')
     expect(imageOptions).not.toContain('gpt-4o-mini')
+
+    // Change configuration provider
+    const nextConfig = {
+      ...config,
+      llm: { provider: 'anthropic', model: 'claude-3-opus' },
+    }
+    rerenderWithConfig(nextConfig)
+
+    // Wait for options to update for the new provider, including the image model capability filter
+    await waitFor(() => {
+      const c0Options = Array.from(c0Datalist.options).map((opt) => opt.value)
+      expect(c0Options).toContain('claude-3-opus')
+
+      const imgDatalist = document.getElementById('datalist-image_model') as HTMLDataListElement
+      const imgOptions = Array.from(imgDatalist.options).map((opt) => opt.value)
+      expect(imgOptions).toContain('claude-image-1')
+      expect(imgOptions).not.toContain('claude-3-opus')
+    })
   })
 
   it('warns on unknown model ID on save', async () => {
@@ -264,6 +296,56 @@ describe('RouterSection', () => {
       expect.stringContaining('Warning: Model ID not in catalog: unknown-model-id-123'),
       expect.any(Object),
     )
+    expect(onSave).toHaveBeenCalled()
+  })
+
+  it('falls back to offline catalog judge profiles models when models.list returns empty', async () => {
+    // Override RPC mock to return empty array
+    mockModelsResponse = []
+
+    const catalog = catalogWithTiers({
+      c0: { provider: 'openai', model: 'gpt-4o' },
+    })
+    catalog.routerProfiles!.judge = {
+      profiles: {
+        openai: { autoModel: 'gpt-4o-mini', models: ['gpt-4o-mini', 'gpt-4o-offline'] },
+      },
+    }
+
+    renderSection(catalog)
+
+    await waitFor(() => {
+      const c0Datalist = document.getElementById('datalist-c0') as HTMLDataListElement
+      expect(c0Datalist).toBeInTheDocument()
+      const c0Options = Array.from(c0Datalist.options).map((opt) => opt.value)
+      expect(c0Options).toContain('gpt-4o-offline')
+    })
+  })
+
+  it('shows warning when both models.list and offline catalog are empty (cannot validate model)', async () => {
+    // Override RPC mock to return empty array
+    mockModelsResponse = []
+
+    const onSave = vi.fn()
+    const catalog = catalogWithTiers({
+      c0: { provider: 'openai', model: 'any-model' },
+    })
+    catalog.routerProfiles!.judge = {
+      profiles: {
+        openai: { autoModel: null, models: [] },
+      },
+    }
+
+    renderSection(catalog, onSave)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save Router' }))
+
+    await waitFor(() => {
+      expect(toast.warning).toHaveBeenCalledWith(
+        expect.stringContaining('Warning: Could not validate model ID'),
+        expect.any(Object),
+      )
+    })
     expect(onSave).toHaveBeenCalled()
   })
 })
