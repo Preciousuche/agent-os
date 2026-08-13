@@ -27,9 +27,10 @@ let mockBootstrap: Bootstrap = {
 // tests drive the tree without AppProviders, so stub useRpc with a no-op RPC
 // whose waitForConnection never settles — OverviewPage mounts (shell chrome +
 // the view header render) without firing real RPC traffic in a chrome test.
+const mockRpcCall = vi.fn().mockImplementation(() => new Promise(() => {}))
 const noopRpc = {
   waitForConnection: () => new Promise<void>(() => {}),
-  call: () => new Promise(() => {}),
+  call: (...args: unknown[]) => mockRpcCall(...args),
   on: () => () => {},
   connect: () => {},
   disconnect: () => {},
