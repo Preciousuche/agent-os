@@ -8,7 +8,7 @@ import {
   useState,
   type MouseEvent as ReactMouseEvent,
 } from 'react'
-import { Link, Outlet, useLocation } from 'react-router'
+import { Link, Outlet, useLocation, useNavigate } from 'react-router'
 import {
   Activity,
   BarChart3,
@@ -41,7 +41,7 @@ import {
   useKeyboardShortcut,
   useShortcutOverlay,
 } from '@/components/KeyboardShortcuts'
-import { t, tPlural, useLocale } from '@/i18n'
+import { t, tPlural, useLocale, type MessageKey } from '@/i18n'
 import { useTheme } from '@/stores/theme'
 import { useConnection } from '@/stores/connection'
 import { useApprovals } from '@/services/approval-monitor'
@@ -154,6 +154,54 @@ function normalizedRoutePath(pathname: string): string {
   }
 }
 
+interface NavShortcutSpec {
+  combo: string
+  path: string
+  descriptionKey: MessageKey
+}
+
+const NAV_SHORTCUTS: ReadonlyArray<NavShortcutSpec> = [
+  { combo: 'g c', path: 'chat', descriptionKey: 'shell.shortcutNavChat' },
+  { combo: 'g o', path: 'overview', descriptionKey: 'shell.shortcutNavOverview' },
+  { combo: 'g h', path: 'health', descriptionKey: 'shell.shortcutNavHealth' },
+  { combo: 'g n', path: 'channels', descriptionKey: 'shell.shortcutNavChannels' },
+  { combo: 'g m', path: 'mcp', descriptionKey: 'shell.shortcutNavMcp' },
+  { combo: 'g k', path: 'skills', descriptionKey: 'shell.shortcutNavSkills' },
+  { combo: 'g s', path: 'sessions', descriptionKey: 'shell.shortcutNavSessions' },
+  { combo: 'g a', path: 'agents', descriptionKey: 'shell.shortcutNavAgents' },
+  { combo: 'g u', path: 'usage', descriptionKey: 'shell.shortcutNavUsage' },
+  { combo: 'g r', path: 'cron', descriptionKey: 'shell.shortcutNavCron' },
+  { combo: 'g ,', path: 'settings', descriptionKey: 'shell.shortcutNavSettings' },
+  { combo: 'g e', path: 'env', descriptionKey: 'shell.shortcutNavEnv' },
+  { combo: 'g l', path: 'logs', descriptionKey: 'shell.shortcutNavLogs' },
+  { combo: 'g p', path: 'approvals', descriptionKey: 'shell.shortcutNavApprovals' },
+]
+
+function NavShortcut({
+  combo,
+  descriptionKey,
+  path,
+  navigateTo,
+}: {
+  combo: string
+  descriptionKey: MessageKey
+  path: string
+  navigateTo: (path: string) => void
+}) {
+  useKeyboardShortcut(
+    {
+      combo,
+      description: t(descriptionKey),
+      category: t('shell.shortcutCategoryNavigation'),
+    },
+    (e) => {
+      e.preventDefault()
+      navigateTo(path)
+    },
+  )
+  return null
+}
+
 export function AppShell() {
   // #258 — the shell is the one subscriber the whole console needs. Its own
   // chrome re-renders here; the routed view is remounted through the container
@@ -170,6 +218,7 @@ export function AppShell() {
   const bootstrap = useBootstrap()
   const location = useLocation()
   const shortcutOverlay = useShortcutOverlay()
+  const navigate = useNavigate()
 
   // Documented, not dispatched: the drawer binds Escape itself (below) because
   // it has to run while focus is inside the drawer, which the global editable
@@ -200,6 +249,17 @@ export function AppShell() {
     restoreDrawerFocusRef.current = restoreTriggerFocus
     setSidebarOpen(false)
   }, [])
+
+  const navigateTo = useCallback(
+    (path: string) => {
+      navigate(`/${path}`)
+      closeMobileDrawer(false)
+      setTimeout(() => {
+        mainRef.current?.focus({ preventScroll: true })
+      }, 0)
+    },
+    [navigate, closeMobileDrawer],
+  )
 
   useEffect(() => {
     const mq = mobileQuery()
@@ -379,6 +439,15 @@ export function AppShell() {
       data-design="unified"
       style={{ ['--shell-header-h' as string]: '0px' }}
     >
+      {NAV_SHORTCUTS.map((ns) => (
+        <NavShortcut
+          key={ns.combo}
+          combo={ns.combo}
+          descriptionKey={ns.descriptionKey}
+          path={ns.path}
+          navigateTo={navigateTo}
+        />
+      ))}
       <a className="shell-skip-link" href="#main-content" onClick={focusMainContent}>
         {t('shell.navSkipToContent')}
       </a>

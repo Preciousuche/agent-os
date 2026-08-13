@@ -65,10 +65,17 @@ function Sheet({ shortcuts, onClose }: { shortcuts: RegisteredShortcut[]; onClos
               <div key={item.id} className="shortcut-sheet__row">
                 <span className="shortcut-sheet__desc">{item.spec.description}</span>
                 <span className="shortcut-sheet__keys">
-                  {comboParts(item.spec.combo).map((part, idx) => (
-                    <Fragment key={`${item.id}-${idx}`}>
-                      {idx > 0 && !mac ? <span className="shortcut-sheet__plus">+</span> : null}
-                      <kbd className="shortcut-sheet__kbd">{part}</kbd>
+                  {item.spec.combo.split(' ').map((chord, chordIdx) => (
+                    <Fragment key={`${item.id}-${chordIdx}`}>
+                      {chordIdx > 0 && (
+                        <span className="shortcut-sheet__then">{t('shell.shortcutSeparator')}</span>
+                      )}
+                      {comboParts(chord).map((part, idx) => (
+                        <Fragment key={`${item.id}-${chordIdx}-${idx}`}>
+                          {idx > 0 && !mac ? <span className="shortcut-sheet__plus">+</span> : null}
+                          <kbd className="shortcut-sheet__kbd">{part}</kbd>
+                        </Fragment>
+                      ))}
                     </Fragment>
                   ))}
                 </span>

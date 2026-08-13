@@ -569,8 +569,8 @@ export function ChatPage() {
   useKeyboardShortcut(
     {
       combo: NEW_CHAT_COMBO,
-      description: 'Start a new chat',
-      category: 'Chat',
+      description: t('shell.shortcutNewChat'),
+      category: t('shell.shortcutCategoryChat'),
       allowInInputs: true,
     },
     (e) => {
@@ -585,8 +585,8 @@ export function ChatPage() {
   useKeyboardShortcut(
     {
       combo: 'escape',
-      description: 'Abort the streaming turn, else recover the queue into the composer',
-      category: 'Chat',
+      description: t('shell.shortcutAbortTurn'),
+      category: t('shell.shortcutCategoryChat'),
     },
     (e) => {
       if (busy) {

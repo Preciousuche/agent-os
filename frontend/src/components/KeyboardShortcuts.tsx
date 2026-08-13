@@ -89,12 +89,30 @@ export function KeyboardShortcutProvider({ children }: { children: React.ReactNo
     helpOpenRef.current = isHelpOpen
   }, [isHelpOpen])
 
+  // Keep track of pending prefix chords (e.g. 'g')
+  const pendingPrefixRef = useRef<string | null>(null)
+  const timeoutRef = useRef<NodeJS.Timeout | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current)
+    }
+  }, [])
+
   const register = useCallback<RegisterFn>((id, spec, handler) => {
     setShortcuts((prev) => [...prev, { id, spec, handler }])
     return () => setShortcuts((prev) => prev.filter((item) => item.id !== id))
   }, [])
 
   useEffect(() => {
+    const clearPendingPrefix = () => {
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current)
+        timeoutRef.current = null
+      }
+      pendingPrefixRef.current = null
+    }
+
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return
       const combos = eventCombos(e)
@@ -103,10 +121,9 @@ export function KeyboardShortcutProvider({ children }: { children: React.ReactNo
       const editable = isEditableTarget(e.target)
       const overlaid = overlayDepth() > 0
 
-      // The sheet owns '?' in both directions. Closing has to be checked first:
-      // the sheet is itself a layer, so the open-guard below can never be true
-      // while it is up.
+      // The sheet owns '?' in both directions. Closing has to be checked first.
       if (combos.includes(HELP_COMBO)) {
+        clearPendingPrefix()
         if (helpOpenRef.current) {
           e.preventDefault()
           setHelpOpen(false)
@@ -119,9 +136,50 @@ export function KeyboardShortcutProvider({ children }: { children: React.ReactNo
         }
       }
 
-      const matches = shortcutsRef.current.filter(
-        (item) => !item.spec.documentationOnly && combos.includes(item.spec.combo),
-      )
+      // Modifier or Escape cancels a pending prefix
+      const hasModifier = e.ctrlKey || e.metaKey || e.altKey || e.shiftKey
+      if (hasModifier || combos.includes('escape')) {
+        clearPendingPrefix()
+      }
+
+      let matches: RegisteredShortcut[] = []
+      const currentPrefix = pendingPrefixRef.current
+
+      if (currentPrefix && !hasModifier && !combos.includes('escape')) {
+        const chordCombos = combos.map((c) => `${currentPrefix} ${c}`)
+        matches = shortcutsRef.current.filter(
+          (item) => !item.spec.documentationOnly && chordCombos.includes(item.spec.combo),
+        )
+        clearPendingPrefix()
+      } else if (!currentPrefix && !hasModifier) {
+        // Collect all potential prefixes dynamically
+        const prefixes = new Set<string>()
+        for (const s of shortcutsRef.current) {
+          const parts = s.spec.combo.split(' ')
+          if (parts.length > 1) {
+            prefixes.add(parts[0]!)
+          }
+        }
+
+        const matchedPrefix = combos.find((c) => prefixes.has(c))
+        if (matchedPrefix && !editable && !overlaid) {
+          pendingPrefixRef.current = matchedPrefix
+          if (timeoutRef.current) clearTimeout(timeoutRef.current)
+          timeoutRef.current = setTimeout(() => {
+            pendingPrefixRef.current = null
+          }, 1500)
+          return
+        }
+
+        matches = shortcutsRef.current.filter(
+          (item) => !item.spec.documentationOnly && combos.includes(item.spec.combo),
+        )
+      } else {
+        matches = shortcutsRef.current.filter(
+          (item) => !item.spec.documentationOnly && combos.includes(item.spec.combo),
+        )
+      }
+
       // Most-recently registered first, so a later mount can claim a key the
       // page below it also binds.
       for (let i = matches.length - 1; i >= 0; i -= 1) {
@@ -134,7 +192,12 @@ export function KeyboardShortcutProvider({ children }: { children: React.ReactNo
     }
 
     document.addEventListener('keydown', onKeyDown)
-    return () => document.removeEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('keydown', onKeyDown)
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current)
+      }
+    }
   }, [setHelpOpen])
 
   const help = useMemo(() => ({ isHelpOpen, setHelpOpen }), [isHelpOpen, setHelpOpen])
