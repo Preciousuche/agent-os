@@ -146,6 +146,13 @@ export function KeyboardShortcutProvider({ children }: { children: React.ReactNo
       const currentPrefix = pendingPrefixRef.current
 
       if (currentPrefix && !hasModifier && !combos.includes('escape')) {
+        if (combos.includes(currentPrefix)) {
+          if (timeoutRef.current) clearTimeout(timeoutRef.current)
+          timeoutRef.current = setTimeout(() => {
+            pendingPrefixRef.current = null
+          }, 1500)
+          return
+        }
         const chordCombos = combos.map((c) => `${currentPrefix} ${c}`)
         matches = shortcutsRef.current.filter(
           (item) => !item.spec.documentationOnly && chordCombos.includes(item.spec.combo),

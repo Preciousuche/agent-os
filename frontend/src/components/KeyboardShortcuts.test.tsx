@@ -22,6 +22,7 @@ const ORIGINAL_PLATFORM = navigator.platform
 
 afterEach(() => {
   setPlatform(ORIGINAL_PLATFORM || ORIGINAL_UA)
+  vi.useRealTimers()
 })
 
 function press(target: Element | Document, init: KeyboardEventInit) {
@@ -351,6 +352,48 @@ describe('chords and prefix state', () => {
 
     press(document, { key: 'c', code: 'KeyC' })
     expect(fired).toEqual([])
+
+    vi.useRealTimers()
+  })
+
+  it('re-arms on repeated prefix key', async () => {
+    vi.useFakeTimers()
+    const fired: string[] = []
+    function ChordHarness() {
+      useKeyboardShortcut(
+        {
+          combo: 'g c',
+          description: 'Go to Chat',
+          category: 'Navigation',
+        },
+        (e) => {
+          e.preventDefault()
+          fired.push('chat')
+        },
+      )
+      return <div />
+    }
+
+    render(
+      <KeyboardShortcutProvider>
+        <ChordHarness />
+      </KeyboardShortcutProvider>,
+    )
+
+    press(document, { key: 'g', code: 'KeyG' })
+
+    act(() => {
+      vi.advanceTimersByTime(1000)
+    })
+
+    press(document, { key: 'g', code: 'KeyG' })
+
+    act(() => {
+      vi.advanceTimersByTime(1000)
+    })
+
+    press(document, { key: 'c', code: 'KeyC' })
+    expect(fired).toEqual(['chat'])
 
     vi.useRealTimers()
   })

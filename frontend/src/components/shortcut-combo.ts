@@ -4,8 +4,6 @@
 // shell can format a keycap (the New chat tooltip) without pulling in the
 // overlay's ModalShell / motion dependencies.
 
-import { t } from '@/i18n'
-
 export interface ShortcutSpec {
   /**
    * Canonical combo: lowercase, '+'-joined, modifiers first in the order
@@ -91,9 +89,6 @@ const KEY_LABELS: Record<string, string> = {
  * hardcoded '⌘⇧O' at the call site, which was wrong on Windows and Linux.
  */
 export function comboParts(combo: string): string[] {
-  if (combo.includes(' ')) {
-    return combo.split(' ').flatMap((part) => comboParts(part))
-  }
   const mac = isMac()
   return combo
     .toLowerCase()
@@ -111,12 +106,6 @@ export function comboParts(combo: string): string[] {
 
 /** The same caps as one string: '⌘⇧O' on macOS, 'Ctrl+Shift+O' elsewhere. */
 export function formatCombo(combo: string): string {
-  if (combo.includes(' ')) {
-    return combo
-      .split(' ')
-      .map((part) => formatCombo(part))
-      .join(` ${t('shell.shortcutSeparator')} `)
-  }
   return comboParts(combo).join(isMac() ? '' : '+')
 }
 

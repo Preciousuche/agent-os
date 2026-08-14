@@ -4,7 +4,7 @@ import { RouterProvider, createMemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getViews, routeChildren } from './routes'
 import { AppProviders } from './providers'
-import { AppShell, SIDEBAR_COLLAPSED_STORAGE_KEY } from './AppShell'
+import { AppShell, SIDEBAR_COLLAPSED_STORAGE_KEY, NAV_SHORTCUTS } from './AppShell'
 import { KeyboardShortcutProvider } from '@/components/KeyboardShortcuts'
 import { useConnection } from '@/stores/connection'
 import { useApprovals } from '@/services/approval-monitor'
@@ -27,10 +27,9 @@ let mockBootstrap: Bootstrap = {
 // tests drive the tree without AppProviders, so stub useRpc with a no-op RPC
 // whose waitForConnection never settles — OverviewPage mounts (shell chrome +
 // the view header render) without firing real RPC traffic in a chrome test.
-const mockRpcCall = vi.fn().mockImplementation(() => new Promise(() => {}))
 const noopRpc = {
   waitForConnection: () => new Promise<void>(() => {}),
-  call: (...args: unknown[]) => mockRpcCall(...args),
+  call: () => new Promise(() => {}),
   on: () => () => {},
   connect: () => {},
   disconnect: () => {},
@@ -88,6 +87,13 @@ describe('routes', () => {
   it('sets the 404 document title to "Not Found - AgentOS Control"', () => {
     renderAt('/definitely-not-a-route')
     expect(document.title).toBe('Not Found - AgentOS Control')
+  })
+
+  it('aligns navigation shortcut paths with registered view routes', () => {
+    const views = getViews()
+    for (const shortcut of NAV_SHORTCUTS) {
+      expect(views.some((view) => view.path === shortcut.path)).toBe(true)
+    }
   })
 })
 
@@ -708,11 +714,6 @@ describe('navigation shortcuts in AppShell', () => {
       }),
     )
   }
-
-  beforeEach(() => {
-    mockRpcCall.mockReset()
-    mockRpcCall.mockImplementation(() => new Promise(() => {}))
-  })
 
   afterEach(() => {
     vi.unstubAllGlobals()

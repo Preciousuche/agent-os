@@ -154,13 +154,13 @@ function normalizedRoutePath(pathname: string): string {
   }
 }
 
-interface NavShortcutSpec {
+export interface NavShortcutSpec {
   combo: string
   path: string
   descriptionKey: MessageKey
 }
 
-const NAV_SHORTCUTS: ReadonlyArray<NavShortcutSpec> = [
+export const NAV_SHORTCUTS: ReadonlyArray<NavShortcutSpec> = [
   { combo: 'g c', path: 'chat', descriptionKey: 'shell.shortcutNavChat' },
   { combo: 'g o', path: 'overview', descriptionKey: 'shell.shortcutNavOverview' },
   { combo: 'g h', path: 'health', descriptionKey: 'shell.shortcutNavHealth' },
