@@ -1650,6 +1650,24 @@ class TelegramChannelEntry(ConfiguredChannelEntry):
         return self
 
 
+class EmailChannelEntry(ConfiguredChannelEntry):
+    """Gateway config entry for an Email (IMAP/SMTP) channel."""
+
+    type: Literal["email"] = "email"
+    imap_server: str
+    imap_port: int = 993
+    imap_use_ssl: bool = True
+    imap_username: str
+    imap_password: str
+    smtp_server: str
+    smtp_port: int = 587
+    smtp_use_tls: bool = True
+    smtp_username: str
+    smtp_password: str
+    allowed_from_addresses: list[str] = Field(default_factory=list)
+    poll_interval_s: float = 30.0
+
+
 ChannelConfigEntry = ConfiguredChannelEntry
 
 
