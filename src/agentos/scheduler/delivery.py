@@ -28,9 +28,7 @@ SCRIPT_HANDLER_KEY = "script_run"
 
 
 _WEBHOOK_TIMEOUT_SECONDS = 10.0
-_REPLY_DIRECTIVE_RE = re.compile(
-    r"\[\[\s*(?:reply_to_current|reply_to\s*:\s*[^\]\n]+)\s*\]\]\s*"
-)
+_REPLY_DIRECTIVE_RE = re.compile(r"\[\[\s*(?:reply_to_current|reply_to\s*:\s*[^\]\n]+)\s*\]\]\s*")
 
 
 def strip_reply_directives(text: str | None) -> str | None:
@@ -48,11 +46,53 @@ def validate_webhook_url(url: str) -> None:
     except ValueError as exc:
         raise ValueError(f"invalid webhook URL: {url!r}") from exc
     if parsed.scheme not in ("http", "https"):
-        raise ValueError(
-            f"webhook URL must use http or https scheme, got {parsed.scheme!r}"
-        )
+        raise ValueError(f"webhook URL must use http or https scheme, got {parsed.scheme!r}")
     if not parsed.hostname:
         raise ValueError(f"webhook URL is missing a hostname: {url!r}")
+
+
+def _is_transient_delivery_error(exc: Exception) -> bool:
+    import asyncio
+
+    import httpx
+
+    if isinstance(exc, asyncio.TimeoutError):
+        return True
+    if hasattr(httpx, "TimeoutException") and isinstance(exc, httpx.TimeoutException):
+        return True
+    if hasattr(httpx, "NetworkError") and isinstance(exc, httpx.NetworkError):
+        return True
+    if hasattr(httpx, "HTTPStatusError") and isinstance(exc, httpx.HTTPStatusError):
+        if exc.response.status_code in (429, 502, 503, 504):
+            return True
+
+    # Text-based fallback to match general socket/connection exceptions
+    msg = str(exc).lower()
+    transient_patterns = (
+        "rate limit",
+        "too many requests",
+        "resource exhausted",
+        "429",
+        "529",
+        "overload",
+        "timeout",
+        "timed out",
+        "econnreset",
+        "fetch failed",
+        "socket",
+        "network",
+        "service unavailable",
+        "bad gateway",
+        "gateway timeout",
+        "502",
+        "503",
+        "504",
+        "cloudflare",
+    )
+    for pattern in transient_patterns:
+        if pattern in msg:
+            return True
+    return False
 
 
 # The origin webchat session a job was born in no longer exists. Deliberately
@@ -448,14 +488,39 @@ class DeliveryChain:
                     )
             else:
                 msg = OutgoingMessage(content=text, reply_to=channel_id or None)
-            await asyncio.wait_for(adapter.send(msg), timeout=30.0)
-            log.info("delivery.channel_sent", job_id=job_id, channel=channel_name)
-            return "delivered"
         except Exception as exc:
-            log.warning("delivery.channel_failed", job_id=job_id, exc_info=True)
-            # The provider's own words ("Bad Request: chat not found") are what
-            # make the run record actionable, so they go on the report too.
+            log.warning("delivery.channel_creation_failed", job_id=job_id, exc_info=True)
             return _failed(str(exc) or type(exc).__name__)
+
+        attempts = 3
+        delay = 1.0
+        for attempt in range(1, attempts + 1):
+            try:
+                await asyncio.wait_for(adapter.send(msg), timeout=30.0)
+                log.info("delivery.channel_sent", job_id=job_id, channel=channel_name)
+                return "delivered"
+            except Exception as exc:
+                is_transient = _is_transient_delivery_error(exc)
+                if attempt == attempts or not is_transient:
+                    log.warning(
+                        "delivery.channel_failed",
+                        job_id=job_id,
+                        attempt=attempt,
+                        is_transient=is_transient,
+                        exc_info=True,
+                    )
+                    # The provider's own words ("Bad Request: chat not found") are what
+                    # make the run record actionable, so they go on the report too.
+                    return _failed(str(exc) or type(exc).__name__)
+                log.info(
+                    "delivery.channel_retry",
+                    job_id=job_id,
+                    attempt=attempt,
+                    error=str(exc),
+                )
+                await asyncio.sleep(delay)
+                delay *= 2.0
+        return _failed("max delivery retries exceeded")
 
     async def _post_to_webhook(
         self,
@@ -488,15 +553,35 @@ class DeliveryChain:
             "summary": text,
             "deliveredAt": datetime.now(UTC).isoformat(),
         }
-        try:
-            async with httpx.AsyncClient(timeout=_WEBHOOK_TIMEOUT_SECONDS) as client:
-                response = await client.post(url, json=payload, headers=headers)
-                response.raise_for_status()
-            log.info("delivery.webhook_sent", job_id=job_id)
-            return "delivered"
-        except Exception as exc:
-            log.warning("delivery.webhook_failed", job_id=job_id, exc_info=True)
-            return _failed(str(exc) or type(exc).__name__)
+        attempts = 3
+        delay = 1.0
+        for attempt in range(1, attempts + 1):
+            try:
+                async with httpx.AsyncClient(timeout=_WEBHOOK_TIMEOUT_SECONDS) as client:
+                    response = await client.post(url, json=payload, headers=headers)
+                    response.raise_for_status()
+                log.info("delivery.webhook_sent", job_id=job_id)
+                return "delivered"
+            except Exception as exc:
+                is_transient = _is_transient_delivery_error(exc)
+                if attempt == attempts or not is_transient:
+                    log.warning(
+                        "delivery.webhook_failed",
+                        job_id=job_id,
+                        attempt=attempt,
+                        is_transient=is_transient,
+                        exc_info=True,
+                    )
+                    return _failed(str(exc) or type(exc).__name__)
+                log.info(
+                    "delivery.webhook_retry",
+                    job_id=job_id,
+                    attempt=attempt,
+                    error=str(exc),
+                )
+                await asyncio.sleep(delay)
+                delay *= 2.0
+        return _failed("max delivery retries exceeded")
 
     async def _deliver_webhook(self, job: CronJob, text: str) -> str:
         """Primary webhook delivery — POST to ``delivery.webhook_url``."""
