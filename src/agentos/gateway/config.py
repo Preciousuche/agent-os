@@ -60,7 +60,7 @@ class AuthConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="AGENTOS_AUTH_")
 
     token: str | None = None
-    password: str | None = None
+    password: str | None = None  # Deprecated and unused. Kept for schema compatibility.
     mode: str = "none"  # none | token | trusted-proxy
     trusted_proxy: str | None = None
 
@@ -2240,7 +2240,7 @@ class GatewayConfig(BaseSettings):
         auth_payload = auth_payload if isinstance(auth_payload, dict) else {}
         env_names = {
             "token": ("AGENTOS_AUTH_TOKEN", "AGENTOS_GATEWAY_AUTH__TOKEN"),
-            "password": ("AGENTOS_AUTH_PASSWORD", "AGENTOS_GATEWAY_AUTH__PASSWORD"),
+            "password": ("AGENTOS_AUTH_PASSWORD", "AGENTOS_GATEWAY_AUTH__PASSWORD"),  # Deprecated
         }
         for field_name, candidates in env_names.items():
             if field_name in auth_payload:

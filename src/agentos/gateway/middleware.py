@@ -122,7 +122,9 @@ class LoopbackOriginMiddleware(BaseHTTPMiddleware):
     RPC surface — the drive-by target — is gated.
     """
 
-    def __init__(self, app: ASGIApp, config: GatewayConfig, bind_is_loopback: bool) -> None:
+    def __init__(
+        self, app: ASGIApp, config: GatewayConfig, bind_is_loopback: bool
+    ) -> None:
         super().__init__(app)
         self._config = config
         self._cors_origins = [o for o in config.cors.allowed_origins if o != "*"]
@@ -154,7 +156,9 @@ class LoopbackOriginMiddleware(BaseHTTPMiddleware):
             )
 
             if not (
-                is_allowed_ws_origin(origin, self._config, bind_is_loopback=self._bind_is_loopback)
+                is_allowed_ws_origin(
+                    origin, self._config, bind_is_loopback=self._bind_is_loopback
+                )
                 or origin_in_allowlist(origin, self._cors_origins)
             ):
                 return PlainTextResponse("Origin not allowed", status_code=403)
@@ -175,7 +179,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self._config = config
         base_path = (
-            config.control_ui.base_path if control_ui_base_path is None else control_ui_base_path
+            config.control_ui.base_path
+            if control_ui_base_path is None
+            else control_ui_base_path
         )
         self._ui_prefix = _safe_ui_exempt_prefix(base_path)
 
@@ -238,7 +244,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self._config = config
         base_path = (
-            config.control_ui.base_path if control_ui_base_path is None else control_ui_base_path
+            config.control_ui.base_path
+            if control_ui_base_path is None
+            else control_ui_base_path
         )
         self._ui_prefix = _safe_ui_exempt_prefix(base_path)
         # {ip: [(timestamp, count), ...]}

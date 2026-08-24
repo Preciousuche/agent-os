@@ -52,3 +52,32 @@ async def test_auth_middleware_fails_closed_for_unimplemented_mode() -> None:
 
     response = await middleware.dispatch(request, mock_call_next)
     assert response.status_code == 401
+
+
+def test_password_auth_mode_migration(tmp_path) -> None:
+    # A legacy config carrying mode="password" and password="foo" should migrate to token mode
+    config_file = tmp_path / "agentos.toml"
+    config_file.write_text(
+        '[auth]\nmode = "password"\npassword = "hunter2"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.warns(DeprecationWarning, match="auth.mode = 'password' is no longer supported"):
+        cfg = GatewayConfig.load(config_file)
+
+    assert cfg.auth.mode == "token"
+    # Ensure that it rewrote the file on disk (mode="token" and password popped)
+    import tomllib
+
+    with open(config_file, "rb") as f:
+        migrated_data = tomllib.load(f)
+    assert migrated_data["auth"]["mode"] == "token"
+    assert "password" not in migrated_data["auth"]
+
+    # Ensure a backup was created
+    backups = [p for p in tmp_path.iterdir() if "backup" in p.name]
+    assert len(backups) == 1
+    with open(backups[0], "rb") as f:
+        backup_data = tomllib.load(f)
+    assert backup_data["auth"]["mode"] == "password"
+    assert backup_data["auth"]["password"] == "hunter2"

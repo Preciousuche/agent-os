@@ -358,6 +358,26 @@ def migrate_config_payload(data: dict[str, Any]) -> ConfigMigrationResult:
         if "allow_unauthenticated_public" in data.get("auth", {}):
             builder.removed_fields.append("auth.allow_unauthenticated_public")
 
+        mode = auth_section.get("mode")
+        if isinstance(mode, str) and mode.strip().lower() == "password":
+            auth_section["mode"] = "token"
+            builder.changes.append("auth.mode: password -> token (password auth was removed)")
+            warnings.warn(
+                "AgentOS: auth.mode = 'password' is no longer supported and has been "
+                "migrated to 'token' (fail-closed). Please configure token "
+                "authentication.",
+                DeprecationWarning,
+                stacklevel=6,
+            )
+            logging.getLogger(__name__).warning(
+                "AgentOS: auth.mode = 'password' is no longer supported and has been "
+                "migrated to 'token' (fail-closed). Please configure token "
+                "authentication."
+            )
+        if "password" in auth_section:
+            auth_section.pop("password")
+            builder.removed_fields.append("auth.password")
+
     if "channel_admin_senders" in builder.payload:
         builder.payload.pop("channel_admin_senders")
         builder.removed_fields.append("channel_admin_senders")
