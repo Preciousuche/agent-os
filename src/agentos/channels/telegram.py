@@ -76,7 +76,13 @@ _TRANSPORT_FAILURE_MARKERS = (
     "returned an invalid response",
 )
 _DEDUPE_SIZE = 4096
-_ALLOWED_UPDATES = ("message", "edited_message", "channel_post", "edited_channel_post")
+_ALLOWED_UPDATES = (
+    "message",
+    "edited_message",
+    "channel_post",
+    "edited_channel_post",
+    "callback_query",
+)
 #: Hard ceiling Telegram enforces on ``sendMessage``/``editMessageText`` text.
 #: Measured on the *rendered* HTML, which is longer than the markdown it came from.
 _MESSAGE_TEXT_LIMIT = 4096
@@ -606,6 +612,12 @@ class TelegramChannel:
                 update_id = update.get("update_id")
                 if isinstance(update_id, int):
                     self._update_offset = update_id + 1
+                if "callback_query" in update:
+                    try:
+                        await self._handle_telegram_callback(update["callback_query"])
+                    except Exception as exc:
+                        log.warning("telegram.callback_query_handle_failed", error=str(exc))
+                    continue
                 try:
                     msg = self.parse_incoming(update)
                 except ValueError:
@@ -659,6 +671,12 @@ class TelegramChannel:
             return Response(status_code=400)
         if not isinstance(update, dict):
             return Response(status_code=400)
+        if "callback_query" in update:
+            try:
+                await self._handle_telegram_callback(update["callback_query"])
+            except Exception as exc:
+                log.warning("telegram.callback_query_handle_failed", error=str(exc))
+            return Response(status_code=200)
         try:
             msg = self.parse_incoming(update)
         except ValueError:
@@ -817,6 +835,151 @@ class TelegramChannel:
             metadata={**attachment.metadata, "telegram_file_path": file_path},
         )
 
+    async def _handle_telegram_callback(self, cb: dict[str, Any]) -> None:
+        cb_id = cb.get("id")
+        data = cb.get("data", "")
+        if not data.startswith("approve:") and not data.startswith("deny:"):
+            return
+
+        act, approval_id = data.split(":", 1)
+        approved = act == "approve"
+
+        sender = cb.get("from", {})
+        sender_id = str(sender.get("id") or "")
+        msg = cb.get("message", {})
+        chat = msg.get("chat", {})
+        chat_id = str(chat.get("id") or "")
+        chat_type = chat.get("type", "")
+        is_group = chat_type in {"group", "supergroup", "channel"}
+
+        # 1. Admission Check
+        temp_msg = IncomingMessage(
+            sender_id=sender_id,
+            channel_id=chat_id,
+            content="",
+        )
+        decision = self.evaluate_access(temp_msg, is_group=is_group, mentioned=True)
+        if not decision.admit:
+            try:
+                await self._api(
+                    "answerCallbackQuery",
+                    {
+                        "callback_query_id": cb_id,
+                        "text": "Unauthorized: Only paired users can approve/deny tools.",
+                        "show_alert": True,
+                    },
+                )
+            except Exception as exc:
+                log.warning("telegram.callback_unauthorized_answer_failed", error=str(exc))
+            return
+
+        from agentos.gateway.approval_queue import get_approval_queue
+
+        queue = get_approval_queue()
+
+        # 2. Retrieve PendingApproval and verify sessionKey match
+        try:
+            entry = queue.get(approval_id)
+        except KeyError:
+            try:
+                await self._api(
+                    "answerCallbackQuery",
+                    {
+                        "callback_query_id": cb_id,
+                        "text": "Error: Approval request not found or expired.",
+                        "show_alert": True,
+                    },
+                )
+            except Exception as exc:
+                log.warning("telegram.callback_keyerror_answer_failed", error=str(exc))
+            return
+
+        session_key = entry.params.get("sessionKey")
+        if isinstance(session_key, str) and session_key:
+            parts = session_key.split(":")
+            if parts and parts[0] == "subagent":
+                parts = parts[1:]
+            if len(parts) >= 5:
+                session_channel = parts[2]
+                session_mode = parts[3]
+                session_peer = parts[4]
+                expected_peer = chat_id if session_mode in ("group", "channel") else sender_id
+                if session_channel != self.config.name or session_peer != expected_peer:
+                    try:
+                        await self._api(
+                            "answerCallbackQuery",
+                            {
+                                "callback_query_id": cb_id,
+                                "text": "Unauthorized: Approval does not belong to this chat.",
+                                "show_alert": True,
+                            },
+                        )
+                    except Exception as exc:
+                        log.warning("telegram.callback_mismatch_answer_failed", error=str(exc))
+                    return
+
+        # 3. Resolve Approval Queue
+        try:
+            queue.resolve(approval_id, approved)
+        except ValueError:
+            try:
+                await self._api(
+                    "answerCallbackQuery",
+                    {
+                        "callback_query_id": cb_id,
+                        "text": "Error: Approval request was already resolved.",
+                        "show_alert": True,
+                    },
+                )
+            except Exception as exc:
+                log.warning("telegram.callback_valueerror_answer_failed", error=str(exc))
+            return
+
+        # 4. Answer Callback Query and Edit message text
+        try:
+            await self._api("answerCallbackQuery", {"callback_query_id": cb_id})
+        except Exception as exc:
+            log.warning("telegram.callback_query_answer_failed", error=str(exc))
+
+        message_id = msg.get("message_id")
+        orig_text = msg.get("text", "")
+        decision_text = "Approved ✅" if approved else "Denied ❌"
+        new_text = f"{orig_text}\n\n<b>{decision_text}</b>"
+
+        if chat_id and message_id:
+            try:
+                await self._api(
+                    "editMessageText",
+                    {
+                        "chat_id": str(chat_id),
+                        "message_id": message_id,
+                        "text": new_text,
+                        "parse_mode": "HTML",
+                        "reply_markup": None,
+                    },
+                )
+            except Exception as exc:
+                log.warning("telegram.callback_message_edit_failed", error=str(exc))
+
+        # 5. Enqueue the virtual message
+        metadata = {
+            "is_group": is_group,
+            "chat_type": chat_type,
+            "chat_id": chat_id,
+            "message_id": str(msg.get("message_id", "")),
+        }
+        username = sender.get("username")
+        if username:
+            metadata["sender_username"] = str(username)
+
+        virtual_msg = IncomingMessage(
+            sender_id=sender_id,
+            channel_id=chat_id,
+            content="Approve" if approved else "Deny",
+            metadata=metadata,
+        )
+        self.enqueue(virtual_msg)
+
     def parse_incoming(self, update: dict[str, Any]) -> IncomingMessage:
         msg = (
             update.get("message")
@@ -832,7 +995,7 @@ class TelegramChannel:
         is_group = chat_type in {"group", "supergroup", "channel"}
         message_id = msg.get("message_id", "")
 
-        metadata: dict[str, Any] = {
+        metadata = {
             "is_group": is_group,
             "chat_type": chat_type,
             "chat_id": str(chat.get("id", self.config.default_chat_id)),
@@ -1285,6 +1448,8 @@ class TelegramChannel:
         else:
             payload["text"] = render_telegram_html(message.content)
             payload["parse_mode"] = "HTML"
+        if "reply_markup" in metadata:
+            payload["reply_markup"] = metadata["reply_markup"]
         return payload
 
     async def edit(self, message_id: str, content: str) -> None:

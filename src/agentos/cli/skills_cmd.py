@@ -370,7 +370,8 @@ def skills_install(
         "--source",
         "-s",
         help=(
-            "Source (clawhub, github, bankr). GitHub accepts owner/repo, owner/repo:path, "
+            "Source (clawhub, github, bankr, capminal, aeon). GitHub accepts owner/repo, "
+            "owner/repo:path, "
             "or GitHub URLs. Bankr accepts a BankrBot/skills URL or a bankr.bot skill URL."
         ),
     ),

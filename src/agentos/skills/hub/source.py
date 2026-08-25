@@ -23,7 +23,10 @@ _TOKEN_RE = re.compile(r"[a-z0-9]+")
 # category for its whole catalog collapses the chip row into a no-op.
 _CATEGORY_KEYWORDS: list[tuple[str, frozenset[str]]] = [
     ("trading", frozenset({"trade", "trading", "swap", "uniswap", "dex", "perp", "hyperliquid"})),
-    ("defi", frozenset({"defi", "aave", "lend", "yield", "vault", "stake", "liquidity", "token"})),
+    (
+        "defi",
+        frozenset({"defi", "aave", "lend", "yield", "vault", "stake", "liquidity", "lp", "token"}),
+    ),
     ("wallet", frozenset({"wallet", "account", "erc4337", "signer", "sign", "custody"})),
     ("markets", frozenset({"polymarket", "kalshi", "prediction", "bet", "market", "odds"})),
     (
@@ -49,9 +52,9 @@ def infer_category(slug: str, provider: str, tags: Sequence[str] = ()) -> str:
     """Return a coarse category for browse filters, or "other" when unknown.
 
     ``tags`` is folded into the same token set as the slug and provider, so a
-    skill whose slug says nothing useful ("stock-premium-lp-manager") still
-    lands in a real bucket. Sources that parse ``tags`` out of frontmatter
-    should pass them; those that have none can omit the argument.
+    skill whose slug says little on its own still lands in a real bucket.
+    Sources that parse ``tags`` out of frontmatter should pass them; those that
+    have none can omit the argument.
     """
     haystack = " ".join([slug, provider, *tags]).lower()
     tokens = set(_TOKEN_RE.findall(haystack))

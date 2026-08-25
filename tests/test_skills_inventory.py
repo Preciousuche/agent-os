@@ -269,7 +269,7 @@ def test_a_branded_hub_install_is_not_credited_twice(tmp_path: Path) -> None:
 
 
 def test_a_branded_install_keeps_an_author_credit_that_is_not_the_brand(tmp_path: Path) -> None:
-    """``stock-premium-lp-manager``: Bankr-distributed, wallet-written.
+    """A wallet-published bankr.bot skill: Bankr-distributed, wallet-written.
 
     Suppression exists to stop a card saying "Bankr" twice, not to erase the
     human behind a brand-distributed skill. The credit survives precisely

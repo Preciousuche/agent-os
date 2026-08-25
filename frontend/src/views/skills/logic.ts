@@ -622,22 +622,19 @@ export function partnerEmptyMessage(
 // ── Registry (community / bankr) derivations ──────────────────────────────────
 
 /**
- * skills.js:503-505 — when the dedicated Bankr tab is showing, Community
- * excludes source==='bankr' rows; otherwise Bankr falls through into Community.
+ * skills.js:503-505 — when a partner has its own tab, Community excludes that
+ * partner's rows; a partner whose tab is hidden falls through into Community.
+ *
+ * Takes the hidden source ids rather than one boolean per partner. The
+ * positional-boolean form was already ambiguous at two partners and has no
+ * readable shape at four — the same trap `registryIntro()` documents.
  */
 export function communityFilter(
   results: RegistryItem[],
-  showBankr: boolean,
-  showCapminal: boolean,
+  hidden: ReadonlySet<string>,
 ): RegistryItem[] {
-  let out = results
-  if (showBankr) {
-    out = out.filter((r) => r.source !== 'bankr')
-  }
-  if (showCapminal) {
-    out = out.filter((r) => r.source !== 'capminal')
-  }
-  return out
+  if (hidden.size === 0) return results
+  return results.filter((r) => !hidden.has(String(r.source || '')))
 }
 
 /** skills.js:560-564 — category → count map over a registry list. */
@@ -726,13 +723,14 @@ export function filterRegistry(
 
 /** skills.js:622-626 — the empty message for a registry group + query. */
 export function registryEmptyMessage(
-  group: 'bankr' | 'capminal' | 'community',
+  group: 'bankr' | 'capminal' | 'aeon' | 'community',
   query: string,
 ): string {
   const q = (query || '').trim()
   if (q) return t('skills.registryEmptyMatch', { query: q })
   if (group === 'bankr') return t('skills.registryEmptyBankr')
   if (group === 'capminal') return t('skills.registryEmptyCapminal')
+  if (group === 'aeon') return t('skills.registryEmptyAeon')
   return t('skills.registryEmptyCommunity')
 }
 

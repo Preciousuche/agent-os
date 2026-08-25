@@ -23,7 +23,10 @@ served as JSON by ``api.bankr.bot/public/skills/<wallet>/<slug>`` — body and a
 Those are carried by a second allowlist, ``_ALLOWED_USER_SKILLS``, and take a
 separate load/fetch path: there is no repository to clone and no
 ``catalog.json``, so the SKILL.md is synthesized from the API payload instead of
-being downloaded through :class:`GitHubSource`.
+being downloaded through :class:`GitHubSource`. That allowlist is empty at the
+moment — the one skill it carried, ``stock-premium-lp-manager``, was superseded
+by ``aero-stock-lp`` in the repository — but the path is live and is what a
+future bankr.bot-published skill is added to.
 """
 
 from __future__ import annotations
@@ -49,13 +52,13 @@ _DEFAULT_REF = "main"
 # Only these skills are loaded from BankrBot/skills. Fetching the whole repo tree
 # and every skill's catalog.json + SKILL.md (~100 skills) trips GitHub's rate
 # limit (429); since the slugs are fixed we fetch just these directly.
-_ALLOWED_SLUGS: tuple[str, ...] = ("bankr", "bankr-token-scam-analysis")
+_ALLOWED_SLUGS: tuple[str, ...] = ("bankr", "bankr-token-scam-analysis", "aero-stock-lp")
 # Bankr-hosted skills published from bankr.bot rather than into the repository,
 # as ``<wallet>/<slug>``. Same reasoning as the repo allowlist — the registry has
-# no public index, so the entries are named here rather than crawled.
-_ALLOWED_USER_SKILLS: tuple[str, ...] = (
-    "0xd4fd8d6f0f64f3d0ba015b645ca8f8c13355c24a/stock-premium-lp-manager",
-)
+# no public index, so the entries are named here rather than crawled. Empty for
+# now: ``stock-premium-lp-manager`` was retired in favour of the repo-published
+# ``aero-stock-lp`` above, which covers the same tokenized-equity LP workflow.
+_ALLOWED_USER_SKILLS: tuple[str, ...] = ()
 _USER_API_BASE = "https://api.bankr.bot/public/skills"
 _USER_PAGE_BASE = "https://bankr.bot/skills"
 _USER_HOSTS = {"bankr.bot", "www.bankr.bot"}
@@ -472,12 +475,6 @@ class BankrSource(SkillSource):
             return None
 
         provider = str(catalog.get("provider") or "")
-        logo_name = catalog.get("logo")
-        logo = (
-            f"{self._raw_base}/{slug}/{logo_name}"
-            if isinstance(logo_name, str) and logo_name
-            else ""
-        )
 
         setup_raw = catalog.get("setup")
         setup = [str(s) for s in setup_raw] if isinstance(setup_raw, list) else []
@@ -496,7 +493,14 @@ class BankrSource(SkillSource):
             identifier=self._skill_url(slug),
             homepage=str(catalog.get("providerUrl") or self._skill_url(slug)),
             provider=provider,
-            logo=logo,
+            # The catalog's own ``logo`` is deliberately ignored. This is a
+            # curated partner catalog: every card in it is Bankr-distributed,
+            # so it wears the Bankr brand mark the tab and catalog header wear
+            # (``LogoBadge`` falls back to it on an empty logo). Honouring the
+            # payload's artwork made ``aero-stock-lp`` — the one entry that
+            # ships a ``logo.svg`` — the odd card out, and would let a
+            # repository-side edit repaint a partner card's identity.
+            logo="",
             emoji=emoji,
             category=infer_category(slug, provider),
             setup=setup,

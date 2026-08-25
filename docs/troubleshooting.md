@@ -96,7 +96,37 @@ agentos gateway restart
 ```
 
 On Windows, ONNX Runtime may need the Visual C++ Redistributable for Visual
-Studio 2015-2022 x64. Install it, then restart the shell and gateway.
+Studio 2015-2022 x64. The portable installer and the PowerShell source
+installer install it via `winget`; the `uv tool install` path does not.
+
+If logs show `DLL load failed`:
+
+1. Install the
+   [Visual C++ Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)
+   (2015-2022 x64).
+2. Restart the shell and gateway.
+
+### Router Degraded or Pinned to One Tier
+
+A missing or incomplete ONNX model bundle is the usual cause. From a source
+checkout:
+
+```sh
+git lfs pull --include="src/agentos/agentos_router/models/**"
+```
+
+Then rebuild and reinstall. Release installs ship the bundle in the wheel.
+
+To use the `llm_judge` strategy instead (no local model files), pick it during
+onboarding or set:
+
+```toml
+[agentos_router]
+strategy = "llm_judge"
+```
+
+Restart the gateway after changing the file. See
+[`configuration.md`](configuration.md#router-strategy).
 
 ## Search Does Not Work
 
@@ -119,6 +149,53 @@ Use Brave with a key:
 export BRAVE_SEARCH_API_KEY="..."
 agentos configure search --search-provider brave --api-key-env BRAVE_SEARCH_API_KEY
 ```
+
+## Browser Tool Not Found or Not Working
+
+The browser tool stays hidden until the `agent-browser` binary is installed:
+
+```sh
+npm install -g agent-browser
+agent-browser install          # downloads Chromium
+```
+
+On Debian, Ubuntu, or Docker, also install system libraries:
+
+```sh
+agent-browser install --with-deps
+```
+
+`agentos doctor` reports whether the binary and Chromium are present.
+
+### Headless Chromium Gets Blocked
+
+Some sites detect headless Chromium and serve CAPTCHAs or refuse to load.
+Do not try to solve CAPTCHAs. Switch to `web_search` / `web_fetch`, or use
+[attach mode](features/browser.md#attach-consent) with a signed-in Chrome.
+
+### Attach Mode Will Not Connect
+
+Start Chrome with a debug port on localhost:
+
+```sh
+# macOS
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
+  --remote-debugging-port=9222
+
+# Linux
+google-chrome --remote-debugging-port=9222
+```
+
+Then set both the port and the consent flag:
+
+```toml
+[browser]
+cdp_port = 9222
+attach_confirmed = true
+```
+
+The port alone is not enough. `attach_confirmed = true` is required because
+attach mode can drive whatever the Chrome session is logged into.
 
 ## Channel Config Saved but Channel Is Offline
 
@@ -179,6 +256,49 @@ agentos agent --max-iterations 20 --timeout 600 -m "Bounded task"
 
 For large tool outputs, see
 [`features/tool-compression.md`](features/tool-compression.md).
+
+## Memory or Embeddings Not Working
+
+Memory search uses local ONNX embeddings by default. Inspect:
+
+```sh
+agentos memory status
+```
+
+If the embedding model is not loaded, the `recommended` extra may be missing:
+
+```sh
+uv tool install --force "use-agent-os[recommended]"
+```
+
+For source installs, pull the Git LFS weights:
+
+```sh
+git lfs pull --include="src/agentos/memory/models/**"
+```
+
+If the model files are pointer stubs instead of real weights, embeddings will
+not load. `agentos doctor` will report memory embeddings as FTS-only.
+
+## Docker-Specific Issues
+
+The shipped `Dockerfile` already sets `AGENTOS_LISTEN=0.0.0.0`. Custom images
+must bind `0.0.0.0` (`--listen 0.0.0.0` or `AGENTOS_LISTEN=0.0.0.0`) so the
+port mapping reaches the gateway. Binding `127.0.0.1` inside the container is
+valid, but the process is then unreachable from the host.
+
+- ONNX Runtime and Pilot Router may need extra system packages depending on
+  the base image. The repo Dockerfile handles this; a custom image may not.
+- Mount `~/.agentos` if config and sessions should persist across restarts.
+
+## Still Stuck?
+
+1. Run `agentos doctor` and read the findings.
+2. Check the [docs index](README.md) for the feature you are using.
+3. Open a
+   [documentation issue](https://github.com/use-agent-os/agent-os/issues/new?template=docs_report.yml)
+   or a [bug report](https://github.com/use-agent-os/agent-os/issues/new?template=bug_report.yml)
+   on GitHub.
 
 ---
 

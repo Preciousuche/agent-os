@@ -26,13 +26,19 @@ before the gateway will bind to a public address (`0.0.0.0` / LAN): the startup
 guard refuses to serve an unauthenticated public bind, and a token is
 auto-generated when unset. See [`gateway.md`](gateway.md) for bind safety.
 
-When auth is enabled, send the token any one of these ways (checked in order):
+When auth is enabled, send the token via HTTP headers (checked in order):
 
 ```text
 Authorization: Bearer <token>
 X-Agentos-Token: <token>
-?token=<token>          # query parameter
 ```
+
+> **Note:** Query-string tokens (`?token=<token>`) are rejected (`401 Unauthorized`). Passing tokens in URL query parameters is not supported to prevent token leaks in access logs, browser history, and HTTP referrers.
+
+The gateway implements exactly three auth modes — `none`, `token`, and
+`trusted-proxy`. Any other value (including the never-implemented `"password"`,
+or a typo like `"tokenn"`) is refused when the config loads rather than silently
+admitting every request; the startup error names the supported modes.
 
 `/health` and `/ready` never require a token. Cross-origin browser requests are
 governed by CORS configuration regardless of auth mode.
@@ -51,7 +57,7 @@ These require no auth and are safe for load balancers and container probes.
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/api/config` | Effective gateway configuration. |
-| `GET` | `/api/system/status` | Version, uptime, active provider, auth mode. |
+| `GET` | `/api/system/status` | Version, uptime, active provider, auth mode, plus `circuitBreaker` (the active provider's breaker) and `circuitBreakers` (every tracked provider). |
 | `GET` | `/api/sessions` | List sessions. |
 | `POST` | `/api/chat` | Send a chat turn. Body: `message` (required), `sessionKey` (optional). |
 | `GET` | `/api/chat/history?sessionKey=<key>` | Fetch a session transcript. |

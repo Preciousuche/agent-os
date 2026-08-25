@@ -4,7 +4,9 @@ Runs the request in-process via :mod:`asyncio` subprocess APIs with no
 namespace isolation. Resource caps from the policy are still honoured by
 reusing :func:`agentos.safety.sandbox.run_sandboxed` for rlimits + wall
 timeout. Every invocation emits a ``WARNING`` so the bypass is visible in
-logs; disabling the sandbox must never be silent.
+logs; disabling the sandbox must never be silent. A second ``WARNING`` is
+emitted when the run reports degraded caps (no ``resource`` module, so no
+rlimits) for the same reason.
 """
 
 from __future__ import annotations
@@ -60,6 +62,17 @@ class NoopBackend(Backend):
             functools.partial(run_sandboxed, list(request.argv), limits),
         )
         elapsed = time.monotonic() - started
+        if result.notes:
+            # Deliberately NOT ``backend_notes``: that field means "the
+            # backend refused something", and both shell.py and code_exec.py
+            # answer it by escalating for approval and re-running the command
+            # unsandboxed — which would double-execute every command that ran
+            # fine here. A warning keeps the missing caps visible instead.
+            log.warning(
+                "sandbox.rlimits_unavailable: cpu/memory caps not enforced action=%s notes=%s",
+                request.action_kind,
+                "; ".join(result.notes),
+            )
         timed_out = result.reason == "wall_limit"
         return SandboxResult(
             returncode=result.returncode,

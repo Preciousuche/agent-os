@@ -6,6 +6,195 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `aero-stock-lp` joins the Bankr skill hub. The skill range-LPs Coinbase
+  tokenized equities (NVDA, AAPL, GOOGL, META) and AERO/USDC on Aerodrome
+  Slipstream (Base) — opening, recentering, and exiting concentrated-liquidity
+  positions, reporting pool status, NAV, yields, and P&L, and routing each
+  position to whichever side pays more at this epoch, staked for AERO emissions
+  or unstaked for trading fees. It is published as a directory in
+  `BankrBot/skills`, so it browses and installs through the existing repo half
+  of the Bankr source with no new code path.
+
+### Changed
+
+- The Bankr user-skill allowlist — the half that carries skills published from
+  a wallet on bankr.bot — is now empty. `stock-premium-lp-manager` was retired
+  from it in favour of `aero-stock-lp`, which covers the same tokenized-equity
+  LP workflow from the repository. Copies already installed keep working; the
+  slug is no longer offered for browse or install.
+
+### Fixed
+
+- Bankr catalog cards all wear the Bankr brand mark again. `aero-stock-lp` is
+  the one entry in `BankrBot/skills` whose `catalog.json` ships a `logo`, so it
+  rendered that artwork while every other card in the partner tab showed the
+  Bankr symbol. The Bankr source now ignores the payload's logo entirely —
+  membership in the catalog is the brand, and a repository-side edit can no
+  longer repaint a partner card's identity.
+
+- The Control UI bootstrap endpoint no longer leaks host details to any website
+  the operator visits. `{control_ui.base_path}/api/bootstrap` sat inside the
+  prefix that is exempt from the loopback Origin guard, so with the default
+  `cors.allowed_origins = ["*"]` any page could `fetch()` it cross-origin and
+  read the absolute config file path (which reveals the OS username) along with
+  the configured `auth_mode`. The bootstrap payload no longer carries
+  `config_path` at all — the console reads it from the authenticated
+  `doctor.status` RPC instead — and the Origin guard's Control UI exemption now
+  stops at `{base_path}/api/`, so the shell and its fingerprinted assets stay
+  exempt while every JSON route under the prefix is fenced on the loopback
+  binds the guard covers. `AuthMiddleware` gets the same narrowing, with a
+  single carve-out for `/api/bootstrap` itself, which the console must read
+  before it holds a token. Fixes #351.
+
+- `auth.mode = "password"` no longer admits the gateway unauthenticated. The
+  mode was advertised and env-bound (`AGENTOS_AUTH_PASSWORD`) but had no branch
+  in `AuthMiddleware.dispatch`, so it fell through to the unauthenticated pass
+  and left the whole non-RPC surface — `/api/system/status`, `/api/config`,
+  `/api/v1/files/upload`, `/api/audio/transcribe` — open on a loopback bind. Any
+  typo'd mode did the same. `auth.mode` now validates against the modes the
+  gateway actually implements (`none`, `token`, `trusted-proxy`) and refuses
+  anything else at load time with a message naming the fix, and the middleware
+  fails closed with `401` on any mode without an enforcement branch — the config
+  object is read live, so a runtime mutation cannot reopen the hole. `auth.mode`
+  is also case- and whitespace-normalized now (`" TOKEN "` loads as `token`), and
+  `agentos.toml.example` plus the setup guide no longer list `password` as a
+  choice. Closes #352.
+
+## [2026.8.24] - 2026-08-24
+
+### Added
+
+- Channel tool approvals are now native interactive surfaces. Telegram inline
+  keyboards, Slack Block Kit actions, and Discord message components render an
+  Approve/Deny pair for a gated tool call instead of asking the operator to type
+  a reply. Every click is authorized before it is honoured: the clicker must
+  pass the channel's own access policy and be an admitted paired user, the
+  approval is bound to the `sessionKey` that raised it so a click from another
+  session is refused, and the surface is offered only in DMs, where the session
+  key is `PER_CHANNEL_PEER` and the approver is unambiguous. Slack request
+  signatures are verified against the raw request body rather than a parsed
+  form, so verification no longer depends on the ASGI body having survived a
+  read. Closes #364.
+
+- Cost visibility. A usage ledger records the cost of each turn and attributes
+  it per tool and per skill through a `ContextVar` that follows the call into
+  nested execution, and a new `agentos cost` command queries it with filters for
+  session, model, tool, skill, and time range, plus export. The router gains a
+  `cost_aware` flag (on by default) that substitutes the cheapest tier capable
+  of the request; image-only tiers are filtered out before the comparison, so a
+  text request is never routed to an image model. Closes #366.
+
+- Aeon (`aeonfun/aeon`) joins Robinhood, Bankr, and Capminal as a Partner Skills
+  source in the Skills hub, with the partner tabs ordered Robinhood, Bankr,
+  Aeon, Capminal, Community.
+
+### Fixed
+
+- The gateway no longer accepts an auth token from the query string, where it
+  would be captured by proxy and server access logs; the uvicorn access log is
+  gated behind `config.debug` for the same reason. Closes #350.
+
+- Rate limiting reads `X-Forwarded-For` only from a verified trusted proxy, and
+  the per-client dict is bounded, so a spoofed header can neither bypass the
+  limiter nor grow it without limit. Closes #354.
+
+- Unhandled gateway exceptions are redacted before they reach the client; the
+  detail is shown only when `debug` is set. Closes #353.
+
+- The `browser` tool refuses `data:` URLs, which could otherwise carry a page
+  past the SSRF check and the domain allowlist; `about:blank` remains the only
+  permitted hostless target. Closes #356.
+
+- The `usage cost` fallback path declines query filters it cannot honour instead
+  of silently dropping them and returning an empty result set.
+
+### Removed
+
+- Dead configuration keys that no code read: `sandbox.network_default` (#360),
+  the memory daily-note keys (#405), and `subagents.archive_after_minutes`
+  (#407).
+
+### Docs
+
+- `cron_default_mode` — the default elevation posture for unattended cron jobs,
+  shipped in 2026.8.21 — is now documented where it is set and where it is read:
+  `agentos.toml.example`, the bundled `agentos` skill, and the approvals and
+  permissions guide. (#413)
+
+## [2026.8.23] - 2026-08-23
+
+### Added
+
+- A `browser` built-in drives a real browser from the agent, backed by the
+  agent-browser CLI (Vercel Labs, Apache-2.0): navigate, read a page as an
+  accessibility snapshot with element refs, click, type, fill, wait, run
+  JavaScript, answer native dialogs, and screenshot. It runs managed and
+  headless by default; attach mode drives the operator's own browser when they
+  opt in. Policy is enforced in AgentOS rather than delegated to the engine —
+  SSRF checks on navigate and on the post-redirect URL plus a private-page guard
+  on reads, `file:` refused while `data:`/`about:` pass, `eval` SSRF-pre-scanned
+  in both modes with an opt-in `restrict_evaluate` denylist and a post-eval URL
+  recheck, `type`/`fill` refusing credential-shaped text, and every payload the
+  engine returns crossing into the transcript inside the untrusted envelope and
+  through credential redaction. The engine subprocess starts from a minimal
+  environment, never `os.environ`, so the gateway token and provider keys are
+  unreachable from it. An optional `allowed_domains` bounds navigation, and the
+  tool sits in `group:web`, so denying web denies it.
+
+- Provider failover is now health-aware. A circuit breaker counts consecutive
+  provider-health failures (overload / gateway 5xx, transport errors, rate
+  limits) per configured provider id; after
+  `llm.circuit_breaker.failure_threshold` failures (default 3) the provider is
+  skipped for a cooldown window (default 60s, doubling per consecutive trip up to
+  `max_cooldown_seconds`), and one half-open probe per window re-closes it when
+  the provider recovers. Failover used to be purely reactive and per-request —
+  every turn during an outage paid the full timeout on the dead primary before
+  falling back, because `ModelSelector` reset to the primary each turn. Breaker
+  state is shared across per-turn selector clones, so detection is paid once
+  per outage instead of once per turn. Request-shaped failures (unknown model,
+  bad request, context overflow, auth, billing) never trip the breaker, and if
+  every link in the chain is in cooldown the primary is still used. State is
+  surfaced in `agentos providers status` (new `circuit` column),
+  `agentos doctor` (`provider.circuit.open` / `provider.circuit.half_open`), and
+  `GET /api/system/status` (`circuitBreaker` / `circuitBreakers`). (#365)
+
+### Changed
+
+- Chart artifacts in the Web UI download as a rendered screenshot image instead
+  of a raw JSON link, so the button hands over the chart people actually see.
+
+### Fixed
+
+- A pinned turn no longer shows another turn's router-fx strip. The
+  `route_pinned` early-return swept only live strips from the dock, so a settled
+  strip from an earlier turn lingered above the composer and read as this turn's
+  selection even though the composer pill showed the pinned model. Every
+  router-fx strip for the current session is now swept on the pinned path —
+  live and settled alike — while strips from other sessions are left untouched.
+  (#345)
+
+- Skill dependency installs work for every kind a skill can declare. Three
+  code paths carried their own idea of what `install.kind` meant — the Skills
+  page executor knew `brew`/`uv`/`download`, the `install_skill_deps` tool knew
+  `brew`/`node`/`go`/`uv`, and the install hints rendered a third, different set — so the
+  seven bundled gmgn skills, which declare `kind: npm`, were uninstallable
+  through both executors ("Unsupported install kind: npm"), and `apt` failed
+  the same way. All three now read one canonical vocabulary and one command
+  builder in `agentos/skills/install_kinds.py`: `brew`, `npm`, `go`, `uv`,
+  `download`, and `apt`, with `node` kept working as an alias for `npm`. The
+  command shown as an install hint is now literally the command that runs.
+  `apt` (needs root) and `download` (needs a fetch plus a chmod) stay
+  hint-only, and say so instead of reading as unsupported. A `uv` spec that
+  declares `bins` installs with `uv tool install`; one that doesn't — a library
+  like `openpyxl` — keeps using `uv pip install`, which the agent tool used to
+  get wrong. Pinned versions (`gmgn-cli@1.2.3`, `openpyxl>=3.1`) now survive the
+  value allowlists instead of losing their install hint, an `apt` package can no
+  longer end in the `-` that turns an install line into a removal, and the
+  `download` hint validates and quotes its URL rather than interpolating it
+  raw. (#358)
+
 ## [2026.8.21] - 2026-08-21
 
 ### Added

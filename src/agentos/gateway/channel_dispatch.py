@@ -1759,6 +1759,163 @@ def _ask_user_reply_text(event: Any) -> str | None:
     return None
 
 
+def _pending_approval_payload(content: Any) -> dict[str, Any] | None:
+    payload = None
+    if isinstance(content, dict):
+        payload = content
+    elif isinstance(content, str):
+        try:
+            payload = json.loads(content)
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("status") not in {"approval_required", "approval_pending"}:
+        return None
+    approval_id = payload.get("approval_id")
+    if not isinstance(approval_id, str) or not approval_id:
+        return None
+    return payload
+
+
+def _channel_kind(channel: Any) -> str:
+    """Resolve the platform an adapter speaks for, e.g. ``telegram``.
+
+    ``transport_name`` is NOT it: on the real adapters it is a property whose
+    value is the wire transport (``polling``/``webhook``/``websocket``), and
+    Discord does not expose it at all. The platform lives on the capability
+    profile; the class name is the fallback for duck-typed adapters.
+    """
+    profile = getattr(channel, "capability_profile", None)
+    channel_type = getattr(profile, "channel_type", None)
+    if isinstance(channel_type, str) and channel_type:
+        return channel_type.lower()
+    return type(channel).__name__.removesuffix("Channel").lower()
+
+
+def _channel_approval_prompt_text(pending: dict[str, Any]) -> str:
+    command = pending.get("command") or ""
+    tool_name = pending.get("tool_name") or "tool"
+    return f"⚠️ Tool '{tool_name}' requires human approval:\n\n`{command}`"
+
+
+async def _deliver_channel_approval_prompt(
+    channel: Any, inbound: IncomingMessage, pending: dict[str, Any]
+) -> None:
+    """Send the approval prompt, degrading to plain text if rendering fails.
+
+    The turn loops around this call only catch ``TimeoutError``, so anything
+    raised while building the platform's interactive payload would unwind the
+    whole turn and leave the user with silence.
+    """
+    try:
+        await _send_channel_approval_prompt(channel, inbound, pending)
+        return
+    except Exception as exc:  # noqa: BLE001 - a dead prompt must not kill the turn
+        log.warning(
+            "channel_dispatch.approval_prompt_failed",
+            channel_type=type(channel).__name__,
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+    try:
+        await channel.send(
+            OutgoingMessage(
+                content=_channel_approval_prompt_text(pending),
+                reply_to=inbound.channel_id,
+                metadata={"channel": inbound.channel_id},
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - nothing left to fall back to
+        log.warning(
+            "channel_dispatch.approval_prompt_fallback_failed",
+            channel_type=type(channel).__name__,
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+
+
+async def _send_channel_approval_prompt(
+    channel: Any, inbound: IncomingMessage, pending: dict[str, Any]
+) -> None:
+    approval_id = pending.get("approval_id")
+    command = pending.get("command") or ""
+    tool_name = pending.get("tool_name") or "tool"
+
+    text = _channel_approval_prompt_text(pending)
+
+    metadata: dict[str, Any] = {"channel": inbound.channel_id}
+    if hasattr(channel, "_reply_thread_ts"):
+        thread_ts = channel._reply_thread_ts(inbound)
+        if thread_ts:
+            metadata["thread_ts"] = thread_ts
+
+    kind = _channel_kind(channel)
+
+    if kind == "telegram":
+        metadata["reply_markup"] = {
+            "inline_keyboard": [
+                [
+                    {"text": "Approve", "callback_data": f"approve:{approval_id}"},
+                    {"text": "Deny", "callback_data": f"deny:{approval_id}"},
+                ]
+            ]
+        }
+    elif kind == "slack":
+        metadata["blocks"] = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"⚠️ Tool *{tool_name}* requires human approval:\n```{command}```",
+                },
+            },
+            {
+                "type": "actions",
+                "block_id": "approval_actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Approve"},
+                        "style": "primary",
+                        "value": f"approve:{approval_id}",
+                        "action_id": "approve_btn",
+                    },
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Deny"},
+                        "style": "danger",
+                        "value": f"deny:{approval_id}",
+                        "action_id": "deny_btn",
+                    },
+                ],
+            },
+        ]
+    elif kind == "discord":
+        metadata["components"] = [
+            {
+                "type": 1,
+                "components": [
+                    {
+                        "type": 2,
+                        "style": 3,
+                        "label": "Approve",
+                        "custom_id": f"approve:{approval_id}",
+                    },
+                    {
+                        "type": 2,
+                        "style": 4,
+                        "label": "Deny",
+                        "custom_id": f"deny:{approval_id}",
+                    },
+                ],
+            }
+        ]
+
+    msg = OutgoingMessage(content=text, reply_to=inbound.channel_id, metadata=metadata)
+    await channel.send(msg)
+
+
 def _text_delta_from_event(event: Any) -> str:
     if isinstance(event, TextDeltaEvent):
         return event.text
@@ -2358,9 +2515,13 @@ async def _run_turn_batch_path(
                         "session.event.tool_result",
                         _tool_result_payload(event),
                     )
-                ask_text = _ask_user_reply_text(event)
-                if ask_text:
-                    text_parts.append(("\n\n" if text_parts else "") + ask_text)
+                pending_approval = _pending_approval_payload(event.result)
+                if pending_approval is not None:
+                    await _deliver_channel_approval_prompt(channel, msg, pending_approval)
+                else:
+                    ask_text = _ask_user_reply_text(event)
+                    if ask_text:
+                        text_parts.append(("\n\n" if text_parts else "") + ask_text)
             elif isinstance(event, ErrorEvent):
                 log.error(
                     "channel_dispatch.agent_error",
@@ -2529,11 +2690,15 @@ async def _run_turn_streaming_path(
                         "session.event.tool_result",
                         _tool_result_payload(event),
                     )
-                ask_text = _ask_user_reply_text(event)
-                if ask_text:
-                    prefix = "\n\n" if text_emitted else ""
-                    text_emitted = True
-                    await queue.put(f"{prefix}{ask_text}")
+                pending_approval = _pending_approval_payload(event.result)
+                if pending_approval is not None:
+                    await _deliver_channel_approval_prompt(channel, msg, pending_approval)
+                else:
+                    ask_text = _ask_user_reply_text(event)
+                    if ask_text:
+                        prefix = "\n\n" if text_emitted else ""
+                        text_emitted = True
+                        await queue.put(f"{prefix}{ask_text}")
             elif isinstance(event, ErrorEvent):
                 log.error(
                     "channel_dispatch.agent_error",

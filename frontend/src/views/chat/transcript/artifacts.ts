@@ -307,16 +307,15 @@ export function createArtifactRenderer(deps: ArtifactRendererDeps) {
         // `data-chart-src` and draws into `__canvas`. Geometry is reserved in
         // CSS so the transcript does not jump when the chart lands.
         //
-        // `data-artifact-download` stays OFF the host and lives only on the
-        // Download anchor below — same as the audio card. The transcript's
-        // delegated click handler downloads any non-anchor element carrying
-        // that attribute, so stamping it here would turn every pan, zoom and
-        // crosshair click on the canvas into a file download.
+        // The download button exports the rendered chart as an image (PNG) via
+        // chart.takeScreenshot(). `data-artifact-download` stays OFF both the
+        // host and the button so delegated transcript download handling does
+        // not intercept it or fetch the raw JSON artifact payload.
         const payloadUrl = artifactPreviewUrl(artifact || {}, { sessionKey, token })
         html += `<div class="msg-artifact-chart" data-chart-src="${escAttr(payloadUrl)}" data-artifact-category="${escAttr(category)}" data-artifact-id="${escAttr(artifact?.id || '')}" data-artifact-name="${escAttr(name)}">
           <div class="msg-artifact-chart__header">
             <span class="msg-artifact-chart__name">${esc(name)}</span>
-            <a class="msg-artifact-chart__download" href="${escAttr(downloadHref)}" download="${escAttr(name)}" data-artifact-download="${escAttr(downloadUrl)}">${escAttr(t('chat.artifactDownload'))}</a>
+            <button type="button" class="msg-artifact-chart__download" aria-label="${escAttr(t('chat.artifactDownload'))}">${escAttr(t('chat.artifactDownload'))}</button>
           </div>
           <div class="msg-artifact-chart__readout"></div>
           <div class="msg-artifact-chart__canvas"></div>

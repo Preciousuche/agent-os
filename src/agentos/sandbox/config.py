@@ -25,7 +25,6 @@ from agentos.sandbox.types import SecurityLevel
 log = logging.getLogger(__name__)
 
 BackendName = Literal["auto", "bubblewrap", "seatbelt", "noop"]
-NetworkDefault = Literal["none", "proxy_allowlist"]
 
 
 @dataclass(frozen=True)
@@ -78,7 +77,6 @@ class SandboxSettings(BaseSettings):
     backend: BackendName = "auto"
     allow_legacy_mode: bool = False
 
-    network_default: NetworkDefault = "none"
     denial_threshold: int = 3
 
     extra_ro_mounts: list[str] = Field(default_factory=list)
@@ -157,6 +155,5 @@ class SandboxSettings(BaseSettings):
 __all__ = [
     "BackendName",
     "EffectiveMode",
-    "NetworkDefault",
     "SandboxSettings",
 ]

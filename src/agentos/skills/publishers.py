@@ -49,6 +49,12 @@ RECOGNIZED_PUBLISHERS: dict[str, SkillPublisher] = {
         url="https://github.com/Capminal/agent-skills",
         logo="",
     ),
+    "aeon": SkillPublisher(
+        id="aeon",
+        name="Aeon",
+        url="https://www.aeon.fun",
+        logo="",
+    ),
 }
 
 

@@ -48,7 +48,6 @@ vi.mock('@/app/providers', () => ({
     ws_url: 'ws://127.0.0.1:18791/ws',
     auth_mode: 'none',
     base_path: '/control',
-    config_path: '/tmp/agentos.toml',
     features: {},
   }),
 }))
@@ -425,9 +424,10 @@ describe('SkillsPage', () => {
     const tabs = screen.getAllByRole('tab')
     expect(tabs.map((tab) => tab.getAttribute('aria-label'))).toEqual([
       'Installed',
-      'Bankr',
-      'Capminal',
       'Robinhood',
+      'Bankr',
+      'Aeon',
+      'Capminal',
       'Community',
     ])
     expect(
@@ -452,18 +452,27 @@ describe('SkillsPage', () => {
     renderPage()
     await waitFor(() => expect(screen.getByLabelText('Skill trader')).toBeInTheDocument())
 
-    const installed = screen.getByRole('tab', { name: 'Installed' })
-    installed.focus()
-    fireEvent.keyDown(installed, { key: 'ArrowRight' })
+    // Walks whatever order the tabs render in rather than naming neighbours,
+    // so reordering the partner tabs does not falsely fail this test — the
+    // behaviour under test is that ArrowRight advances one tab, not which
+    // brand happens to sit second.
+    const order = screen.getAllByRole('tab').map((el) => el.getAttribute('aria-label'))
+    expect(order.length).toBeGreaterThan(2)
 
-    const bankr = screen.getByRole('tab', { name: 'Bankr' })
-    expect(bankr).toHaveAttribute('aria-selected', 'true')
-    expect(bankr).toHaveFocus()
+    let current = screen.getByRole('tab', { name: order[0]! })
+    current.focus()
 
-    fireEvent.keyDown(bankr, { key: 'ArrowRight' })
-    const capminal = screen.getByRole('tab', { name: 'Capminal' })
-    expect(capminal).toHaveAttribute('aria-selected', 'true')
-    expect(capminal).toHaveFocus()
+    for (const next of order.slice(1)) {
+      fireEvent.keyDown(current, { key: 'ArrowRight' })
+      const el = screen.getByRole('tab', { name: next! })
+      expect(el).toHaveAttribute('aria-selected', 'true')
+      expect(el).toHaveFocus()
+      current = el
+    }
+
+    // And wraps back to the first tab from the last.
+    fireEvent.keyDown(current, { key: 'ArrowRight' })
+    expect(screen.getByRole('tab', { name: order[0]! })).toHaveFocus()
   })
 
   it('the status pill filters the installed list', async () => {

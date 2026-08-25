@@ -50,7 +50,6 @@ def test_bootstrap_returns_json_context(dist_dir: Path) -> None:
         "ws_url",
         "auth_mode",
         "base_path",
-        "config_path",
         "features",
     }
     assert data["base_path"] == "/control"
@@ -144,14 +143,16 @@ def test_runtime_base_injection_escapes_attribute_content(dist_dir: Path) -> Non
     assert "<script>alert(1)</script>" not in shell
 
 
-def test_bootstrap_includes_config_path(dist_dir: Path, tmp_path: Path) -> None:
+def test_bootstrap_omits_host_identifying_config_path(dist_dir: Path, tmp_path: Path) -> None:
+    """The route is reachable pre-auth, so it must not leak the host FS path (#351)."""
     config = GatewayConfig()
     config.config_path = str(tmp_path / "AgentOS Config.toml")
 
     response = _client(config).get("/control/api/bootstrap")
 
     assert response.status_code == 200
-    assert response.json()["config_path"] == str(config.config_path)
+    assert "config_path" not in response.json()
+    assert str(tmp_path) not in response.text
 
 
 def test_bootstrap_ws_url_uses_client_reachable_wildcard_host(dist_dir: Path) -> None:

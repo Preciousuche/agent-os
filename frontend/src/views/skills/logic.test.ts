@@ -391,6 +391,24 @@ describe('partnerEmptyMessage', () => {
 
 const item = (o: Partial<RegistryItem>): RegistryItem => o
 
+describe('aeon as a partner source', () => {
+  it('groups an aeon-published skill under Partners', () => {
+    expect(skillGroupKey({ name: 'tx-explain', publisher: { id: 'aeon' } } as never)).toBe(
+      'partners',
+    )
+  })
+
+  it('does not treat an unbranded aeon-sourced skill as a partner skill', () => {
+    // The brand comes from the server-side allowlist, never from the row's own
+    // source string, so a synthesized row cannot land in the Partners group.
+    expect(isPartnerSkill({ name: 'tx-explain', source: 'aeon' } as never)).toBe(false)
+  })
+
+  it('names Aeon in its own empty message rather than the community one', () => {
+    expect(registryEmptyMessage('aeon', '')).not.toBe(registryEmptyMessage('community', ''))
+  })
+})
+
 describe('communityFilter', () => {
   const rows = [
     item({ source: 'bankr', name: 'b' }),
@@ -398,12 +416,12 @@ describe('communityFilter', () => {
     item({ source: 'clawhub', name: 'c' }),
   ]
   it('drops bankr and capminal rows when their tabs are shown', () => {
-    expect(communityFilter(rows, true, true).map((r) => r.name)).toEqual(['c'])
-    expect(communityFilter(rows, true, false).map((r) => r.name)).toEqual(['cap', 'c'])
-    expect(communityFilter(rows, false, true).map((r) => r.name)).toEqual(['b', 'c'])
+    expect(communityFilter(rows, new Set(['bankr', 'capminal'])).map((r) => r.name)).toEqual(['c'])
+    expect(communityFilter(rows, new Set(['bankr'])).map((r) => r.name)).toEqual(['cap', 'c'])
+    expect(communityFilter(rows, new Set(['capminal'])).map((r) => r.name)).toEqual(['b', 'c'])
   })
   it('keeps bankr and capminal rows when their tabs are hidden', () => {
-    expect(communityFilter(rows, false, false).map((r) => r.name)).toEqual(['b', 'cap', 'c'])
+    expect(communityFilter(rows, new Set()).map((r) => r.name)).toEqual(['b', 'cap', 'c'])
   })
 })
 

@@ -13,9 +13,11 @@ import { createArtifactRenderer } from './artifacts'
 import {
   CHART_ARTIFACT_MIME,
   candleReadout,
+  chartImageFilename,
   chartTheme,
   compactNumber,
   createChartMounter,
+  exportChartAsImage,
   formatCandleTime,
   hasVolume,
   isChartArtifact,
@@ -41,6 +43,7 @@ interface FakeChart {
   remove: ReturnType<typeof vi.fn>
   subscribeCrosshairMove: ReturnType<typeof vi.fn>
   unsubscribeCrosshairMove: ReturnType<typeof vi.fn>
+  takeScreenshot: ReturnType<typeof vi.fn>
   series: FakeSeries[]
   crosshair: CrosshairHandler[]
 }
@@ -57,6 +60,8 @@ vi.mock('lightweight-charts', () => ({
 function makeFakeChart(): FakeChart {
   const series: FakeSeries[] = []
   const crosshair: CrosshairHandler[] = []
+  const fakeCanvas = document.createElement('canvas')
+  fakeCanvas.toDataURL = vi.fn(() => 'data:image/png;base64,fake')
   return {
     series,
     crosshair,
@@ -76,6 +81,7 @@ function makeFakeChart(): FakeChart {
       const at = crosshair.indexOf(handler)
       if (at >= 0) crosshair.splice(at, 1)
     }),
+    takeScreenshot: vi.fn(() => fakeCanvas),
   }
 }
 
@@ -89,14 +95,16 @@ function createdCharts(): FakeChart[] {
  * the real renderer in artifacts.test.ts; this builds the same shape so the
  * mounter can be exercised on its own.
  */
-function placeholder(url: string): HTMLElement {
+function placeholder(url: string, name = 'bonk.chart.json'): HTMLElement {
   const host = document.createElement('div')
   host.className = 'msg-artifact-chart'
   if (url) host.dataset.chartSrc = url
   else host.setAttribute('data-chart-src', '')
+  host.dataset.artifactName = name
   host.innerHTML =
     '<div class="msg-artifact-chart__header">' +
-    '<span class="msg-artifact-chart__name">bonk.chart.json</span>' +
+    `<span class="msg-artifact-chart__name">${name}</span>` +
+    '<button type="button" class="msg-artifact-chart__download">Download</button>' +
     '</div>' +
     '<div class="msg-artifact-chart__readout"></div>' +
     '<div class="msg-artifact-chart__canvas"></div>' +
@@ -724,5 +732,91 @@ describe('createChartMounter readout', () => {
     const unsubOrder = chart?.unsubscribeCrosshairMove.mock.invocationCallOrder[0] ?? 0
     const removeOrder = chart?.remove.mock.invocationCallOrder[0] ?? 0
     expect(unsubOrder).toBeLessThan(removeOrder)
+  })
+
+  it('wires the download button to export the chart as a PNG image', async () => {
+    const host = placeholder('/api/v1/artifacts/art-1', 'bonk.chart.json')
+    const root = mountRoot(host)
+    const mounter = createChartMounter({
+      fetchPayload: async () => payloadBody(),
+      getTheme: () => 'dark',
+    })
+
+    mounter.mountCharts(root)
+
+    await vi.waitFor(() => expect(createdCharts()).toHaveLength(1))
+    const downloadBtn = host.querySelector<HTMLButtonElement>('.msg-artifact-chart__download')
+    expect(downloadBtn).not.toBeNull()
+
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    downloadBtn?.click()
+
+    expect(createdCharts()[0]?.takeScreenshot).toHaveBeenCalled()
+    expect(clickSpy).toHaveBeenCalled()
+    clickSpy.mockRestore()
+  })
+})
+
+/* ── chartImageFilename ─────────────────────────────────────────────────── */
+
+describe('chartImageFilename', () => {
+  it('replaces .json with .png', () => {
+    expect(chartImageFilename('bonk.chart.json')).toBe('bonk.chart.png')
+    expect(chartImageFilename('chart.json')).toBe('chart.png')
+    expect(chartImageFilename('sol-usd.JSON')).toBe('sol-usd.png')
+  })
+
+  it('preserves existing .png extensions', () => {
+    expect(chartImageFilename('chart.png')).toBe('chart.png')
+    expect(chartImageFilename('preview.PNG')).toBe('preview.PNG')
+  })
+
+  it('appends .png when no extension is provided', () => {
+    expect(chartImageFilename('bonk-chart')).toBe('bonk-chart.png')
+  })
+
+  it('defaults to chart.png when empty or nullish', () => {
+    expect(chartImageFilename('')).toBe('chart.png')
+    expect(chartImageFilename(null)).toBe('chart.png')
+    expect(chartImageFilename(undefined)).toBe('chart.png')
+  })
+})
+
+/* ── exportChartAsImage ─────────────────────────────────────────────────── */
+
+describe('exportChartAsImage', () => {
+  it('takes a screenshot from the chart and triggers anchor download', () => {
+    const fakeCanvas = document.createElement('canvas')
+    fakeCanvas.toDataURL = vi.fn(() => 'data:image/png;base64,sample')
+    const fakeChart = {
+      takeScreenshot: vi.fn(() => fakeCanvas),
+    }
+
+    let downloadedHref = ''
+    let downloadedName = ''
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (
+      this: HTMLAnchorElement,
+    ) {
+      downloadedHref = this.href
+      downloadedName = this.download
+    })
+
+    const ok = exportChartAsImage(fakeChart, 'solana.chart.json')
+    expect(ok).toBe(true)
+    expect(fakeChart.takeScreenshot).toHaveBeenCalled()
+    expect(fakeCanvas.toDataURL).toHaveBeenCalledWith('image/png')
+    expect(downloadedHref).toBe('data:image/png;base64,sample')
+    expect(downloadedName).toBe('solana.chart.png')
+
+    clickSpy.mockRestore()
+  })
+
+  it('returns false when takeScreenshot or toDataURL fails', () => {
+    const brokenChart = {
+      takeScreenshot: vi.fn(() => {
+        throw new Error('Screenshot failed')
+      }),
+    }
+    expect(exportChartAsImage(brokenChart, 'chart')).toBe(false)
   })
 })

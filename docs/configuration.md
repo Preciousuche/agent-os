@@ -402,6 +402,27 @@ to the provider and no tool handler is exposed for the turn. When you do enable
 tools on smaller local models, keep a positive `agent_max_iterations` so
 malformed or repetitive tool calls terminate predictably.
 
+## Prompt Cache Configuration
+
+Controls prompt prefix caching for LLM providers that support it (Anthropic, OpenAI, DeepSeek, OpenRouter, etc.):
+
+```toml
+[prompt_cache]
+mode = "auto"   # "auto" | "on" | "off"
+```
+
+- `auto` (default): Enables prompt caching when the active provider and model support prefix caching.
+- `on`: Forces prompt caching on.
+- `off`: Disables prompt caching.
+
+Environment variable override:
+```sh
+export AGENTOS_CACHE_MODE="auto"   # auto | on | off
+```
+
+> [!NOTE]
+> The legacy `prompt_cache.enabled` key and `AGENTOS_CACHE_ENABLED` environment variable are deprecated and mapped automatically to `mode` (`on`/`off`) with a deprecation warning.
+
 ## Router Configuration
 
 Router modes:
@@ -793,6 +814,24 @@ agentos agent \
 ```
 
 Read: [`tools-and-sandbox.md`](tools-and-sandbox.md)
+
+## Safety Configuration
+
+Controls prompt-ingress safety scanning and untrusted workspace containment:
+
+```toml
+[safety]
+wrap_untrusted_workspace = true
+injection_scan_mode = "report"   # "report" | "enforce" | "off"
+```
+
+- `wrap_untrusted_workspace` (default `true`): Wraps files read from untrusted workspace directories with safety bounding markers to mitigate prompt-injection framing in workspace files.
+- `injection_scan_mode` (applied to bootstrap workspace files, not all ingress):
+  - `report` (default): Scans those files and logs detected patterns without changing the content; the turn still runs.
+  - `enforce`: Redacts matched content from untrusted workspace files before it reaches the prompt; the turn still runs.
+  - `off`: Disables prompt-injection scanning.
+
+`[safety]` is TOML-only; there is no environment-variable override for these keys.
 
 ## Gateway Binding
 

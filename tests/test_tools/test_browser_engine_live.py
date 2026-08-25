@@ -31,8 +31,13 @@ pytestmark = [
 
 Browser = Callable[..., Awaitable[str]]
 
-# A self-contained page: heading, button, and a title — no network needed.
-_PAGE = "data:text/html,<title>LiveTest</title><h1>Hello</h1><button>Go</button>"
+# Self-contained initial target — about:blank is the only allowed safe hostless target.
+_BLANK = "about:blank"
+_INJECT_DOM = (
+    "document.title = 'LiveTest'; "
+    "document.body.innerHTML = '<h1>Hello</h1><button>Go</button>'; "
+    "document.title"
+)
 
 
 def _browser() -> Browser:
@@ -112,15 +117,17 @@ def _unwrap(value: str) -> str:
 @pytest.mark.asyncio
 async def test_navigate_snapshot_eval_close() -> None:
     browser_mod.configure_browser(_config())
-    nav = await _call(action="navigate", url=_PAGE)
+    nav = await _call(action="navigate", url=_BLANK)
     assert nav["success"] is True, nav
-    assert nav["title"] == "LiveTest"
-    assert "<untrusted" in nav["snapshot"]
-    # The accessibility snapshot should mention the button.
-    assert "Go" in nav["snapshot"] or "button" in nav["snapshot"].lower()
+
+    setup = await _call(action="eval", expression=_INJECT_DOM)
+    assert setup["success"] is True
 
     snap = await _call(action="snapshot")
     assert snap["success"] is True
+    assert "<untrusted" in snap["snapshot"]
+    # The accessibility snapshot should mention the button.
+    assert "Go" in snap["snapshot"] or "button" in snap["snapshot"].lower()
 
     ev = await _call(action="eval", expression="document.title")
     assert ev["success"] is True
@@ -133,7 +140,7 @@ async def test_navigate_snapshot_eval_close() -> None:
 @pytest.mark.asyncio
 async def test_managed_supervisor_attaches_real_chromium(request: pytest.FixtureRequest) -> None:
     browser_mod.configure_browser(_config())
-    await _call(action="navigate", url=_PAGE)
+    await _call(action="navigate", url=_BLANK)
     # Resolve the managed browser's CDP endpoint and confirm it is loopback.
     endpoint = await agent_browser.resolve_cdp_endpoint(_session_key(request))
     assert endpoint is not None
@@ -151,7 +158,7 @@ async def test_real_dialog_intercepted_and_dismissed(request: pytest.FixtureRequ
     browser_mod.configure_browser(_config(dialog_policy="must_respond"))
     # Navigate first, then trigger a confirm() from eval so the supervisor (which
     # attached during navigate) captures it as a pending dialog.
-    await _call(action="navigate", url=_PAGE)
+    await _call(action="navigate", url=_BLANK)
     supervisor = SUPERVISOR_REGISTRY.get(_session_key(request))
     if supervisor is None or not supervisor.active:
         pytest.skip("supervisor did not attach; dialog interception not available")

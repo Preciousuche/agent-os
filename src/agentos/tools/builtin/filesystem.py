@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import fnmatch
+import functools
 import json
 import os
 import posixpath
@@ -840,7 +841,13 @@ async def edit_file(
     loop = asyncio.get_event_loop()
     original = await loop.run_in_executor(None, p.read_text, "utf-8")
 
-    match = _locate_edit(original, old_text, new_text, path=path)
+    # The matcher is the CPU-bound part of an edit, not the read or the write:
+    # a miss on a large file sweeps every window in it. Run it in the same
+    # executor so a slow match costs a worker thread, never the event loop.
+    match = await loop.run_in_executor(
+        None,
+        functools.partial(_locate_edit, original, old_text, new_text, path=path),
+    )
     updated = match.updated
 
     def _write() -> None:

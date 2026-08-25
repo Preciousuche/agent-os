@@ -1,9 +1,11 @@
 """Subprocess execution sandbox with CPU / memory / wall / network limits.
 
-POSIX-only: uses :mod:`resource` via ``preexec_fn`` to apply
-``setrlimit`` before the child process begins. On platforms where
-``resource`` is unavailable (notably Windows), :func:`run_sandboxed`
-returns a :class:`SandboxResult` with ``reason='unsupported_platform'``.
+CPU / memory caps are POSIX-only: they use :mod:`resource` via
+``preexec_fn`` to apply ``setrlimit`` before the child process begins. On
+platforms where ``resource`` is unavailable (notably Windows) the command
+still runs — the wall-clock timeout is cross-platform — but the rlimits are
+skipped and :data:`NOTE_NO_RLIMITS` is attached to
+:attr:`SandboxResult.notes` so the degradation is never silent.
 
 Environment whitelist: by default the sandboxed command sees only
 ``HOME``, ``PATH`` and ``LANG`` — a deliberate narrow whitelist so
@@ -44,6 +46,11 @@ REASON_NETWORK_DENY: Final[str] = "network_deny"
 REASON_UNSUPPORTED: Final[str] = "unsupported_platform"
 REASON_EXEC_FAILED: Final[str] = "exec_failed"
 
+NOTE_NO_RLIMITS: Final[str] = (
+    "rlimits not applied on this platform: the POSIX 'resource' module is "
+    "unavailable, so only the wall-clock timeout is enforced"
+)
+
 _DEFAULT_ENV_WHITELIST: Final[tuple[str, ...]] = ("HOME", "PATH", "LANG")
 
 
@@ -67,6 +74,10 @@ class SandboxResult:
     stderr: str
     reason: str = REASON_OK
     limits: SandboxLimits = field(default_factory=SandboxLimits)
+    #: Advisory degradations that applied to this run — e.g. the caps in
+    #: ``limits`` could not be enforced. Non-fatal, but callers must surface
+    #: them: a user who turned the sandbox on has to know what is missing.
+    notes: tuple[str, ...] = ()
 
 
 def _preexec(limits: SandboxLimits):  # pragma: no cover — runs in child
@@ -111,20 +122,15 @@ def run_sandboxed(
     * Network scope ``'deny'`` is recorded and returned verbatim on
       result — the child is expected to consult the limit (tests assert
       this by round-tripping the limits).
-    * On POSIX platforms without :mod:`resource` (Windows) the function
-      short-circuits with ``reason='unsupported_platform'``.
+    * On platforms without :mod:`resource` (Windows) the command still
+      runs under the wall limit; only the rlimits are skipped, and
+      :data:`NOTE_NO_RLIMITS` is added to ``notes`` to say so.
     """
 
     effective = limits or SandboxLimits()
-
-    if not HAS_RESOURCE:
-        return SandboxResult(
-            returncode=-1,
-            stdout="",
-            stderr="resource module unavailable",
-            reason=REASON_UNSUPPORTED,
-            limits=effective,
-        )
+    # ``_preexec`` returns ``None`` without ``resource``, so the same call
+    # works everywhere; the note is what keeps the degradation visible.
+    notes: tuple[str, ...] = () if HAS_RESOURCE else (NOTE_NO_RLIMITS,)
 
     env = _filtered_env(effective.env_whitelist)
 
@@ -134,8 +140,18 @@ def run_sandboxed(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
-            preexec_fn=_preexec(effective),  # noqa: PLW1509 — POSIX setrlimit
+            preexec_fn=_preexec(effective),  # noqa: PLW1509 — None off POSIX
             text=True,
+        )
+    except NotImplementedError as exc:
+        # Hosts without process creation at all (WASI / Emscripten builds).
+        return SandboxResult(
+            returncode=-1,
+            stdout="",
+            stderr=str(exc),
+            reason=REASON_UNSUPPORTED,
+            limits=effective,
+            notes=notes,
         )
     except (OSError, ValueError) as exc:
         return SandboxResult(
@@ -144,6 +160,7 @@ def run_sandboxed(
             stderr=str(exc),
             reason=REASON_EXEC_FAILED,
             limits=effective,
+            notes=notes,
         )
 
     try:
@@ -157,16 +174,21 @@ def run_sandboxed(
             stderr=stderr or "",
             reason=REASON_WALL_LIMIT,
             limits=effective,
+            notes=notes,
         )
 
     # Translate exit signals into structured reasons. On POSIX a hard
     # RLIMIT_CPU exceed produces SIGKILL (returncode == -9); RLIMIT_AS
-    # typically surfaces as SIGSEGV / allocation-error exits.
+    # typically surfaces as SIGSEGV / allocation-error exits. Only a
+    # negative returncode is a signal exit, so the mapping never fires on
+    # platforms that have no signals.
     reason = REASON_OK
-    if proc.returncode in {-_signal(9), -_signal(24)}:  # SIGKILL / SIGXCPU
-        reason = REASON_CPU_LIMIT
-    elif proc.returncode == -_signal(11):  # SIGSEGV
-        reason = REASON_MEMORY_LIMIT
+    if proc.returncode < 0:
+        signalled = -proc.returncode
+        if signalled in {_signal(9), _signal(24)}:  # SIGKILL / SIGXCPU
+            reason = REASON_CPU_LIMIT
+        elif signalled == _signal(11):  # SIGSEGV
+            reason = REASON_MEMORY_LIMIT
 
     return SandboxResult(
         returncode=proc.returncode,
@@ -174,6 +196,7 @@ def run_sandboxed(
         stderr=stderr or "",
         reason=reason,
         limits=effective,
+        notes=notes,
     )
 
 
@@ -187,6 +210,7 @@ def _signal(num: int) -> int:
 
 __all__ = [
     "HAS_RESOURCE",
+    "NOTE_NO_RLIMITS",
     "REASON_CPU_LIMIT",
     "REASON_EXEC_FAILED",
     "REASON_MEMORY_LIMIT",

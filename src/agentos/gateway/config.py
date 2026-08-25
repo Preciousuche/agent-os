@@ -56,13 +56,53 @@ class ContextOverflowPolicy(StrEnum):
     REFUSE = "refuse"
 
 
+# The auth modes the gateway actually implements. Every entry here has an
+# enforcement branch in ``AuthMiddleware.dispatch``; anything else — the
+# never-implemented ``"password"``, or a typo like ``"tokenn"`` — is rejected at
+# validation time so a mode can never silently no-op into an unauthenticated
+# gateway (#352). Enforced end-to-end is a stricter bar still: see
+# ``_mode_protects_public_bind``, which admits only ``token`` on a public bind.
+SUPPORTED_AUTH_MODES: tuple[str, ...] = ("none", "token", "trusted-proxy")
+
+
 class AuthConfig(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="AGENTOS_AUTH_")
+    model_config = SettingsConfigDict(env_prefix="AGENTOS_AUTH_", validate_assignment=True)
 
     token: str | None = None
+    # Reserved: no auth mode consumes this today. ``auth.mode="password"`` is
+    # rejected (see the ``mode`` validator); the field is kept so an existing
+    # config that carries the value still loads.
     password: str | None = None
-    mode: str = "none"  # none | token | password | trusted-proxy
+    mode: str = "none"  # none | token | trusted-proxy
     trusted_proxy: str | None = None
+
+    @field_validator("mode")
+    @classmethod
+    def _validate_mode(cls, value: str) -> str:
+        """Fail closed on any mode the middleware does not enforce.
+
+        ``"password"`` was advertised and env-bound but never implemented: it
+        fell through ``AuthMiddleware.dispatch`` and admitted every non-RPC
+        request unauthenticated. Refusing it (and every typo) at load time is
+        the only posture that cannot be mistaken for "auth is on".
+        """
+        normalized = value.strip().lower()
+        if normalized in SUPPORTED_AUTH_MODES:
+            return normalized
+        supported = ", ".join(repr(mode) for mode in SUPPORTED_AUTH_MODES)
+        extra = (
+            " It was advertised but never implemented: it admitted every request "
+            "unauthenticated instead of asking for a credential."
+            if normalized == "password"
+            else ""
+        )
+        raise ValueError(
+            f"auth.mode={value!r} is not an implemented auth mode; supported modes are "
+            f"{supported}.{extra} Fix it in the [auth] section of your agentos.toml "
+            "(or in AGENTOS_AUTH_MODE / AGENTOS_GATEWAY_AUTH__MODE if the value comes "
+            'from the environment): mode = "token" enforces a credential, mode = "none" '
+            "accepts an unauthenticated loopback-only gateway."
+        )
 
 
 class CorsConfig(BaseSettings):
@@ -258,6 +298,21 @@ class TaskRuntimeConfig(BaseModel):
         return value
 
 
+class LlmCircuitBreakerConfig(BaseModel):
+    """Provider health breaker: skip a failing provider instead of retrying it.
+
+    ``failure_threshold`` consecutive provider-health failures (overload,
+    transport, rate limit) open the breaker for ``cooldown_seconds``; the
+    window doubles per consecutive trip up to ``max_cooldown_seconds``. One
+    half-open probe per window re-closes it when the provider recovers.
+    """
+
+    enabled: bool = True
+    failure_threshold: int = Field(default=3, ge=1)
+    cooldown_seconds: float = Field(default=60.0, gt=0)
+    max_cooldown_seconds: float = Field(default=600.0, gt=0)
+
+
 class LlmProviderConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="AGENTOS_LLM_")
 
@@ -275,6 +330,8 @@ class LlmProviderConfig(BaseSettings):
     # provider name. Mapped models send provider.order=[name] so the provider
     # is preferred without disabling OpenRouter fallback.
     provider_routing: dict[str, str] = Field(default_factory=dict)
+    # Health-aware failover: see LlmCircuitBreakerConfig.
+    circuit_breaker: LlmCircuitBreakerConfig = Field(default_factory=LlmCircuitBreakerConfig)
 
     @model_validator(mode="after")
     def _normalize_direct_deepseek_model(self) -> LlmProviderConfig:
@@ -602,8 +659,6 @@ class MemoryConfig(BaseSettings):
     )
     capture_max_chars: int = 2000
     capture_roll_max_chars: int = Field(default=50_000, ge=0)
-    daily_note_max_chars: int = Field(default=4000, ge=0)
-    daily_notes_total_max_chars: int = Field(default=8000, ge=0)
 
     # Retriever tuning
     temporal_decay_enabled: bool = False
@@ -1104,6 +1159,7 @@ class AgentOSRouterConfig(BaseSettings):
     )
 
     enabled: bool = True
+    cost_aware: bool = True
     auto_thinking: bool = True
     rollout_phase: str = "full"  # "observe" | "prompt_only" | "full"
     # "pilot-v1" (default: local ONNX+MiniLM router, English-optimized, no LLM
@@ -1740,10 +1796,6 @@ class SubagentsGatewayConfig(BaseModel):
     """Number of slots in ``task_runtime.max_concurrency`` reserved for
     non-subagent tasks so a fan-out parent never starves itself."""
 
-    archive_after_minutes: int = Field(default=60, ge=0)
-    """Minutes after a subagent session goes terminal before its transcript
-    is archived. ``0`` disables auto-archive."""
-
     prompt_compact: bool = False
     """When enabled, subagent bootstrap prompts keep only AGENTS.md and TOOLS.md."""
 
@@ -2157,8 +2209,6 @@ class GatewayConfig(BaseSettings):
             "mode": "stable",
             "prompt_cache_mode": self.prompt_cache.effective_mode,
             "query_embedding_cache": self.memory.cost.query_embedding_cache,
-            "daily_note_max_chars": str(self.memory.daily_note_max_chars),
-            "daily_notes_total_max_chars": str(self.memory.daily_notes_total_max_chars),
             "auto_capture_enabled": str(self.memory.auto_capture_enabled).lower(),
             "capture_effective_enabled": str(capture_effective_enabled).lower(),
             "capture_mode": self.memory.capture_mode,
@@ -2324,7 +2374,8 @@ def _mode_protects_public_bind(auth: AuthConfig) -> bool:
     has a resolver in ``resolve_auth``. Every other mode is treated as
     unauthenticated for the public-bind guard:
 
-    * ``password`` has no HTTP-surface enforcement yet.
+    * ``password`` is refused outright by ``AuthConfig`` — it was advertised
+      but never implemented (#352).
     * ``trusted-proxy`` only string-matches the client-supplied
       ``X-Forwarded-For`` header (trivially spoofable) and has no resolver in
       ``resolve_auth``, so it is not enforced end-to-end. Re-admit it here

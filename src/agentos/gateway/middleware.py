@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import secrets
 import time
-from collections import defaultdict
+from collections import OrderedDict
 from collections.abc import Callable
 from urllib.parse import urlsplit
 
+import structlog
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse, Response
@@ -14,6 +16,8 @@ from starlette.types import ASGIApp
 
 from agentos.gateway.access import is_loopback_address
 from agentos.gateway.config import GatewayConfig
+
+log = structlog.get_logger(__name__)
 
 # Endpoints that carry no credentials and expose no Control surface; exempt from
 # both token auth and the cross-origin guard. Kept module-level so the origin
@@ -23,6 +27,21 @@ _PUBLIC_PATHS = frozenset({"/health", "/healthz", "/ready", "/readyz"})
 # The RPC/API surface the cross-origin guard exists to protect. A UI base_path
 # that overlaps this must NOT be trusted as an exemption prefix.
 _API_PREFIX = "/api"
+
+# The one JSON route under the Control UI prefix that must answer before the
+# console holds a token: the SPA fetches it to learn its WS URL and auth mode.
+# Everything else under ``{base_path}/api/`` is Control surface and is treated
+# like the root ``/api/*`` routes.
+_UI_BOOTSTRAP_SUFFIX = f"{_API_PREFIX}/bootstrap"
+
+
+def _is_under(prefix: str, path: str) -> bool:
+    """True for the prefix itself or anything below it — never a bare-prefix match.
+
+    ``/control`` and ``/control/chat`` match ``/control``; ``/controlpanel``
+    does not, so a sibling route can never be swallowed by the exemption.
+    """
+    return path == prefix or path.startswith(prefix + "/")
 
 
 def _safe_ui_exempt_prefix(base_path: str) -> str | None:
@@ -120,11 +139,18 @@ class LoopbackOriginMiddleware(BaseHTTPMiddleware):
     and the Control UI shell is a served page (guarded by CSP /
     ``SecurityHeadersMiddleware``), not an RPC sink. Only the ``/api/*`` and
     RPC surface — the drive-by target — is gated.
+
+    The UI prefix exemption stops at ``{base_path}/api/`` (``_is_ui_path``
+    below): the shell and its fingerprinted assets are top-level navigations
+    and subresource loads, but the JSON routes mounted under the UI prefix
+    (``/control/api/bootstrap``) are fetch-only and therefore exactly the
+    drive-by target this guard exists for — with ``cors.allowed_origins``
+    defaulting to ``["*"]``, any page the operator visits could read the
+    response. Un-exempting the whole ``/api/`` subtree rather than that one
+    path keeps future JSON routes gated by default (#351).
     """
 
-    def __init__(
-        self, app: ASGIApp, config: GatewayConfig, bind_is_loopback: bool
-    ) -> None:
+    def __init__(self, app: ASGIApp, config: GatewayConfig, bind_is_loopback: bool) -> None:
         super().__init__(app)
         self._config = config
         self._cors_origins = [o for o in config.cors.allowed_origins if o != "*"]
@@ -138,9 +164,12 @@ class LoopbackOriginMiddleware(BaseHTTPMiddleware):
     def _is_ui_path(self, path: str) -> bool:
         if self._ui_prefix is None:
             return False
-        # Exact shell ("/control") or anything under it ("/control/..."),
-        # never a bare-prefix match that would swallow sibling routes.
-        return path == self._ui_prefix or path.startswith(self._ui_prefix + "/")
+        if not _is_under(self._ui_prefix, path):
+            return False
+        # ...except the JSON surface mounted under the prefix: a cross-origin
+        # page cannot read the shell it navigates to, but it *can* read
+        # fetch("/control/api/bootstrap"). Those stay gated.
+        return not _is_under(self._ui_prefix + _API_PREFIX, path)
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         path = request.url.path
@@ -156,9 +185,7 @@ class LoopbackOriginMiddleware(BaseHTTPMiddleware):
             )
 
             if not (
-                is_allowed_ws_origin(
-                    origin, self._config, bind_is_loopback=self._bind_is_loopback
-                )
+                is_allowed_ws_origin(origin, self._config, bind_is_loopback=self._bind_is_loopback)
                 or origin_in_allowlist(origin, self._cors_origins)
             ):
                 return PlainTextResponse("Origin not allowed", status_code=403)
@@ -179,16 +206,28 @@ class AuthMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self._config = config
         base_path = (
-            config.control_ui.base_path
-            if control_ui_base_path is None
-            else control_ui_base_path
+            config.control_ui.base_path if control_ui_base_path is None else control_ui_base_path
         )
         self._ui_prefix = _safe_ui_exempt_prefix(base_path)
+        # Modes already reported by the fail-closed branch. A gateway stuck in
+        # that posture would otherwise log once per request.
+        self._reported_unsupported_modes: set[str] = set()
 
     def _is_ui_path(self, path: str) -> bool:
+        """True for the served Control UI surface that carries no credentials.
+
+        The shell and its assets are exempt. The JSON surface under
+        ``{base_path}/api/`` is not — it is Control surface and gets the same
+        token gate as the root ``/api/*`` routes — with one carve-out for
+        ``/api/bootstrap``, which the console must read before it has a token.
+        """
         if self._ui_prefix is None:
             return False
-        return path == self._ui_prefix or path.startswith(self._ui_prefix + "/")
+        if not _is_under(self._ui_prefix, path):
+            return False
+        if path == self._ui_prefix + _UI_BOOTSTRAP_SUFFIX:
+            return True
+        return not _is_under(self._ui_prefix + _API_PREFIX, path)
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         # Skip auth for public endpoints and WebSocket upgrades (WS handles own auth)
@@ -218,16 +257,24 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     {"error": "Unauthorized", "code": "UNAUTHORIZED"}, status_code=401
                 )
 
+        else:
+            # Fail closed on any mode without an enforcement branch above
+            # (#352). ``AuthConfig`` rejects those at validation time, but this
+            # middleware reads the config object live — a runtime mutation must
+            # never fall through to an unauthenticated pass, which is exactly
+            # how ``auth.mode="password"`` silently admitted every request.
+            if auth_mode not in self._reported_unsupported_modes:
+                self._reported_unsupported_modes.add(auth_mode)
+                log.warning("gateway.auth.unsupported_mode", mode=auth_mode)
+            return JSONResponse({"error": "Unauthorized", "code": "UNAUTHORIZED"}, status_code=401)
+
         return await call_next(request)  # type: ignore[no-any-return]
 
     def _extract_token(self, request: Request) -> str | None:
         auth_header = request.headers.get("authorization", "")
         if auth_header.startswith("Bearer "):
             return auth_header[7:]
-        token_header = request.headers.get("x-agentos-token")
-        if token_header:
-            return token_header
-        return request.query_params.get("token")
+        return request.headers.get("x-agentos-token")
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
@@ -238,22 +285,60 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         app: ASGIApp,
         config: GatewayConfig,
         control_ui_base_path: str | None = None,
+        max_tracked_clients: int = 10_000,
     ) -> None:
         super().__init__(app)
         self._config = config
         base_path = (
-            config.control_ui.base_path
-            if control_ui_base_path is None
-            else control_ui_base_path
+            config.control_ui.base_path if control_ui_base_path is None else control_ui_base_path
         )
         self._ui_prefix = _safe_ui_exempt_prefix(base_path)
-        # {ip: [(timestamp, count), ...]}
-        self._windows: dict[str, list[float]] = defaultdict(list)
+        # {ip: [timestamp, ...]} with LRU eviction ordering
+        self._windows: OrderedDict[str, list[float]] = OrderedDict()
+        self._max_tracked_clients = max_tracked_clients
+        self._last_sweep: float = 0.0
 
     def _is_ui_path(self, path: str) -> bool:
         if self._ui_prefix is None:
             return False
-        return path == self._ui_prefix or path.startswith(self._ui_prefix + "/")
+        return _is_under(self._ui_prefix, path)
+
+    def _is_trusted_proxy(self, peer_ip: str | None) -> bool:
+        if not peer_ip:
+            return False
+        trusted = self._config.auth.trusted_proxy
+        if not trusted:
+            return False
+        trusted_set = {p.strip().lower().strip("[]") for p in trusted.split(",") if p.strip()}
+        peer = peer_ip.strip().lower().strip("[]")
+        return peer in trusted_set
+
+    def _get_client_ip(self, request: Request) -> str:
+        peer_ip = request.client.host if request.client else None
+        if self._is_trusted_proxy(peer_ip):
+            forwarded = request.headers.get("x-forwarded-for")
+            if forwarded:
+                first_ip = forwarded.split(",")[0].strip()
+                if first_ip:
+                    return first_ip
+        if peer_ip:
+            return peer_ip
+        return "unknown"
+
+    def _sweep_expired(self, now: float, window: float) -> None:
+        self._last_sweep = now
+        expired = [
+            ip
+            for ip, timestamps in self._windows.items()
+            if not timestamps or (now - timestamps[-1] >= window)
+        ]
+        for ip in expired:
+            self._windows.pop(ip, None)
+
+    def _evict_excess(self, now: float, window: float) -> None:
+        self._sweep_expired(now, window)
+        while len(self._windows) > self._max_tracked_clients:
+            self._windows.popitem(last=False)
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         if not self._config.rate_limit.enabled:
@@ -272,38 +357,71 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         client_ip = self._get_client_ip(request)
         now = time.time()
-        window = self._config.rate_limit.window_seconds
+        window = float(self._config.rate_limit.window_seconds)
         max_req = self._config.rate_limit.max_requests
+        sweep_interval = min(window, 60.0)
+
+        # Periodic sweep of expired windows
+        if now - self._last_sweep >= sweep_interval:
+            self._sweep_expired(now, window)
 
         # Prune old timestamps
-        self._windows[client_ip] = [t for t in self._windows[client_ip] if now - t < window]
+        timestamps = [t for t in self._windows.get(client_ip, []) if now - t < window]
 
-        if len(self._windows[client_ip]) >= max_req:
+        if len(timestamps) >= max_req:
+            self._windows[client_ip] = timestamps
+            self._windows.move_to_end(client_ip)
             return JSONResponse(
                 {"error": "Too Many Requests", "code": "RATE_LIMITED"}, status_code=429
             )
 
-        self._windows[client_ip].append(now)
-        return await call_next(request)  # type: ignore[no-any-return]
+        timestamps.append(now)
+        self._windows[client_ip] = timestamps
+        self._windows.move_to_end(client_ip)
 
-    def _get_client_ip(self, request: Request) -> str:
-        forwarded = request.headers.get("x-forwarded-for")
-        if forwarded:
-            return forwarded.split(",")[0].strip()
-        if request.client:
-            return request.client.host
-        return "unknown"
+        if len(self._windows) > self._max_tracked_clients:
+            self._evict_excess(now, window)
+
+        return await call_next(request)  # type: ignore[no-any-return]
 
 
 class ErrorHandlingMiddleware(BaseHTTPMiddleware):
     """Catch unhandled exceptions and return structured JSON errors."""
 
+    def __init__(self, app: ASGIApp, debug: bool = False) -> None:
+        super().__init__(app)
+        self._debug = debug
+
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         try:
             return await call_next(request)  # type: ignore[no-any-return]
         except Exception as exc:
+            error_id = secrets.token_hex(6)
+            log.error(
+                "gateway.unhandled_exception",
+                error_id=error_id,
+                path=request.url.path,
+                method=request.method,
+                error=str(exc),
+                exc_info=True,
+            )
+            from agentos.redact import redact_sensitive_text
+
+            if self._debug:
+                return JSONResponse(
+                    {
+                        "error": redact_sensitive_text(str(exc)),
+                        "code": "INTERNAL_ERROR",
+                        "error_id": error_id,
+                    },
+                    status_code=500,
+                )
             return JSONResponse(
-                {"error": str(exc), "code": "INTERNAL_ERROR"},
+                {
+                    "error": "Internal server error",
+                    "code": "INTERNAL_ERROR",
+                    "error_id": error_id,
+                },
                 status_code=500,
             )
 

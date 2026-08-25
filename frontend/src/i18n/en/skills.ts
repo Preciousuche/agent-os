@@ -77,6 +77,11 @@ export const skills = defineNamespace('skills', {
   capminalDesc:
     'Wallet, token-launch, and on-chain execution skills maintained by the Capminal team.',
   capminalNotice: "the 'capminal' skill is required for all skills in this catalog.",
+  aeonTitle: 'Aeon skill catalog',
+  aeonDesc:
+    'On-chain investigation, token research, and trend-tracking skills maintained by the Aeon team.',
+  aeonNotice:
+    "Aeon skills are written for Aeon's scheduled runtime; AgentOS adapts them on install. Some need an API key you supply yourself — each card lists what it wants.",
   robinhoodTitle: 'Robinhood skills',
   robinhoodDesc:
     'Official bundled capabilities for Robinhood products and on-chain assets, maintained by AgentOS against the Robinhood Trading MCP.',
@@ -237,5 +242,6 @@ export const skills = defineNamespace('skills', {
   registryEmptyMatch: 'No skills match {query}.',
   registryEmptyBankr: 'No Bankr skills available right now.',
   registryEmptyCapminal: 'No Capminal skills available right now.',
+  registryEmptyAeon: 'No Aeon skills available right now.',
   registryEmptyCommunity: 'No community skills available right now.',
 } as const)
