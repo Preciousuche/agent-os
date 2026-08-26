@@ -28,9 +28,7 @@ SCRIPT_HANDLER_KEY = "script_run"
 
 
 _WEBHOOK_TIMEOUT_SECONDS = 10.0
-_REPLY_DIRECTIVE_RE = re.compile(
-    r"\[\[\s*(?:reply_to_current|reply_to\s*:\s*[^\]\n]+)\s*\]\]\s*"
-)
+_REPLY_DIRECTIVE_RE = re.compile(r"\[\[\s*(?:reply_to_current|reply_to\s*:\s*[^\]\n]+)\s*\]\]\s*")
 
 
 def strip_reply_directives(text: str | None) -> str | None:
@@ -48,9 +46,7 @@ def validate_webhook_url(url: str) -> None:
     except ValueError as exc:
         raise ValueError(f"invalid webhook URL: {url!r}") from exc
     if parsed.scheme not in ("http", "https"):
-        raise ValueError(
-            f"webhook URL must use http or https scheme, got {parsed.scheme!r}"
-        )
+        raise ValueError(f"webhook URL must use http or https scheme, got {parsed.scheme!r}")
     if not parsed.hostname:
         raise ValueError(f"webhook URL is missing a hostname: {url!r}")
 
@@ -479,6 +475,8 @@ class DeliveryChain:
 
         import httpx
 
+        from agentos.channels._util import retry_request
+
         headers = {"Content-Type": "application/json"}
         if token:
             headers["Authorization"] = f"Bearer {token}"
@@ -490,7 +488,7 @@ class DeliveryChain:
         }
         try:
             async with httpx.AsyncClient(timeout=_WEBHOOK_TIMEOUT_SECONDS) as client:
-                response = await client.post(url, json=payload, headers=headers)
+                response = await retry_request(client.post, url, json=payload, headers=headers)
                 response.raise_for_status()
             log.info("delivery.webhook_sent", job_id=job_id)
             return "delivered"

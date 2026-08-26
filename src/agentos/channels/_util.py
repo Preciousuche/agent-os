@@ -282,6 +282,21 @@ async def retry_request(
     last_exc: Exception | None = None
     for attempt in range(max_retries + 1):
         try:
+            if attempt > 0 and "files" in kwargs:
+                files = kwargs["files"]
+                if isinstance(files, dict):
+                    for file_val in files.values():
+                        fileobj = None
+                        if isinstance(file_val, tuple):
+                            if len(file_val) > 1:
+                                fileobj = file_val[1]
+                        else:
+                            fileobj = file_val
+                        if fileobj and hasattr(fileobj, "seek") and callable(fileobj.seek):
+                            try:
+                                fileobj.seek(0)
+                            except Exception:
+                                pass
             resp = await func(*args, **kwargs)
             if resp.status_code == 429:
                 retry_after = float(resp.headers.get("Retry-After", base_delay * (2**attempt)))
