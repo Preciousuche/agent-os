@@ -298,14 +298,16 @@ async def retry_request(
                             except Exception:
                                 pass
             resp = await func(*args, **kwargs)
-            if resp.status_code == 429:
-                retry_after = float(resp.headers.get("Retry-After", base_delay * (2**attempt)))
+            status_code = getattr(resp, "status_code", 200)
+            if status_code == 429:
+                headers = getattr(resp, "headers", {})
+                retry_after = float(headers.get("Retry-After", base_delay * (2**attempt)))
                 log.warning("rate_limited", retry_after=retry_after, attempt=attempt)
                 await asyncio.sleep(retry_after)
                 continue
-            if resp.status_code in {500, 502, 503, 504} and attempt < max_retries:
+            if status_code in {500, 502, 503, 504} and attempt < max_retries:
                 delay = base_delay * (2**attempt) + random.random()
-                log.warning("transient_error", status=resp.status_code, delay=delay)
+                log.warning("transient_error", status=status_code, delay=delay)
                 await asyncio.sleep(delay)
                 continue
             return resp
