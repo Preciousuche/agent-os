@@ -264,9 +264,10 @@ async def test_dispatch_unsupported_surface_approval_payload_is_pending_status()
     assert result.execution_status["reason"] == "approval_pending"
     assert result.execution_status["preservation_class"] == "ephemeral"
     payload = json.loads(result.content)
-    assert payload["status"] == "approval_required"
-    assert payload["approval_id"] == "abc123"
-    assert payload["command"] == "rm secret"
+    assert payload["status"] == "error"
+    assert payload["tool"] == "pending"
+    assert payload["error_class"] == "UnsupportedSurface"
+    assert payload["retry_allowed"] is False
 
 
 @pytest.mark.asyncio
