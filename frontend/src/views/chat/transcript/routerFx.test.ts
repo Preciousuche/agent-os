@@ -452,11 +452,124 @@ describe('createRouterFxRenderer route-pin suppression', () => {
     }
   })
 
+  it('sweeps a stale settled strip when a pin blocks scheduleBeginScan', () => {
+    // Regression for issue #345, path 2: the pin was chosen before the send
+    // flow ran, so scheduleBeginScan early-returns at isRoutePinned(). It must
+    // still sweep the dock — otherwise the previous turn's settled strip sits
+    // above the composer for the whole pinned turn, until the router_decision
+    // event finally arrives.
+    const h = pinnedHarness(true)
+    try {
+      const stale = document.createElement('div')
+      stale.className = 'router-fx'
+      stale.dataset.state = 'settled'
+      stale.dataset.sessionKey = 's'
+      stale.dataset.turnIndex = '1'
+      stale.dataset.renderMode = 'history'
+      h.dock.appendChild(stale)
+      const other = document.createElement('div')
+      other.className = 'router-fx'
+      other.dataset.state = 'settled'
+      other.dataset.sessionKey = 'other-session'
+      other.dataset.turnIndex = '9'
+      other.dataset.renderMode = 'history'
+      h.dock.appendChild(other)
+
+      expect(h.renderer.scheduleBeginScan(h.anchor, 'seed')).toBe(false)
+      expect(stale.isConnected).toBe(false)
+      expect(other.isConnected).toBe(true)
+    } finally {
+      h.cleanup()
+    }
+  })
+
+  it('sweeps a stale settled strip when a pin blocks beginScan', () => {
+    // Same window as scheduleBeginScan, for the immediate-scan path: the pin
+    // suppresses the scan, but the current session's strips must be swept so
+    // the old strip does not linger above the composer while the pinned turn
+    // runs.
+    const h = pinnedHarness(true)
+    try {
+      const stale = document.createElement('div')
+      stale.className = 'router-fx'
+      stale.dataset.state = 'settled'
+      stale.dataset.sessionKey = 's'
+      stale.dataset.turnIndex = '1'
+      stale.dataset.renderMode = 'history'
+      h.dock.appendChild(stale)
+      const other = document.createElement('div')
+      other.className = 'router-fx'
+      other.dataset.state = 'settled'
+      other.dataset.sessionKey = 'other-session'
+      other.dataset.turnIndex = '9'
+      other.dataset.renderMode = 'history'
+      h.dock.appendChild(other)
+
+      expect(h.renderer.beginScan(h.anchor, 'seed')).toBe(false)
+      expect(stale.isConnected).toBe(false)
+      expect(other.isConnected).toBe(true)
+    } finally {
+      h.cleanup()
+    }
+  })
+
   it('mounts no strip for a decision while a tier is pinned', async () => {
     const h = pinnedHarness(true)
     try {
       await h.renderer.handleRouterDecision({ tier: 'c1', model: 'anthropic/claude-a' })
       expect(h.dock.querySelector('.router-fx')).toBeNull()
+    } finally {
+      h.cleanup()
+    }
+  })
+
+  it('sweeps a settled strip from an earlier turn when a pin decides the next turn', async () => {
+    // Regression for issue #345: the previous turn's SETTLED strip (data-live
+    // absent) used to survive the route_pinned early-return, because that
+    // branch only swept live strips. The pinned turn renders no strip of its
+    // own, so the stale settled strip stayed above the composer and read as
+    // this turn's selection.
+    const h = pinnedHarness(true)
+    try {
+      // Simulate a settled strip from the previous turn sitting in the dock.
+      const stale = document.createElement('div')
+      stale.className = 'router-fx'
+      stale.dataset.state = 'settled'
+      stale.dataset.sessionKey = 's'
+      stale.dataset.turnIndex = '1'
+      stale.dataset.renderMode = 'history'
+      stale.innerHTML =
+        '<div class="router-fx-header"><span class="glyph">←</span><span class="title">Model selected</span><span class="glyph">→</span></div>' +
+        '<div class="router-fx-grid"><div class="router-fx-cell win">gpt-5.6-luna</div></div>'
+      h.dock.appendChild(stale)
+
+      await h.renderer.handleRouterDecision({ tier: 'c1', model: 'z-ai/glm-5.2' })
+      expect(h.dock.querySelector('.router-fx')).toBeNull()
+    } finally {
+      h.cleanup()
+    }
+  })
+
+  it('keeps a settled strip from another session when a pin decides a turn', async () => {
+    // The pinned-turn sweep is session-scoped: strips belonging to a different
+    // session must not be removed by this turn's pin.
+    const h = pinnedHarness(true)
+    try {
+      const other = document.createElement('div')
+      other.className = 'router-fx'
+      other.dataset.state = 'settled'
+      other.dataset.sessionKey = 'other-session'
+      other.dataset.turnIndex = '1'
+      other.dataset.renderMode = 'history'
+      other.innerHTML =
+        '<div class="router-fx-header"><span class="glyph">←</span><span class="title">Model selected</span><span class="glyph">→</span></div>' +
+        '<div class="router-fx-grid"><div class="router-fx-cell win">gpt-5.6-luna</div></div>'
+      h.dock.appendChild(other)
+
+      await h.renderer.handleRouterDecision({ tier: 'c1', model: 'z-ai/glm-5.2' })
+      const kept = h.dock.querySelector<HTMLElement>('.router-fx')
+      expect(kept).not.toBeNull()
+      expect(kept!.dataset.sessionKey).toBe('other-session')
     } finally {
       h.cleanup()
     }
@@ -678,6 +791,91 @@ describe('createRouterFxRenderer history reconciliation', () => {
       harness.pref.enabled = false
       harness.renderer.finishHistoryRouterFx()
       expect(harness.dock.querySelector('.router-fx')).toBeNull()
+    } finally {
+      harness.cleanup()
+    }
+  })
+
+  it('finishHistoryRouterFx drops an earlier turn strip when the latest turn was pinned', () => {
+    // Regression for issue #345, path 1 (reviewer repro): turn 1 auto-routed,
+    // turn 2 pinned. historyDecisionFromUsage returns null for the hold turn,
+    // so reconciliation never mounts a strip for it — but finishHistoryRouterFx
+    // used to keep ANY current-session stamped strip, so turn 1's settled
+    // strip survived a reload and read as the pinned turn's selection.
+    const harness = makeHistoryRenderer()
+    try {
+      // Two persisted user turns in the thread so countUserMessages() == 2.
+      const threadEl = harness.host.firstElementChild!
+      const u1 = document.createElement('div')
+      u1.className = 'msg user'
+      const u2 = document.createElement('div')
+      u2.className = 'msg user'
+      threadEl.appendChild(u1)
+      threadEl.appendChild(u2)
+
+      harness.renderer.prepareHistoryRouterFx()
+      const auto = harness.renderer.reconcileHistoryRouterFx(
+        {
+          routed_tier: 'c1',
+          routed_model: 'anthropic/claude-a',
+          routing_source: 'pilot_v1',
+          routing_applied: true,
+        },
+        { hintTimestamp: 1_700_000_000, requestKind: 'text', turnIndex: 1 },
+      )
+      expect(auto).not.toBeNull()
+      expect(harness.dock.querySelectorAll('.router-fx')).toHaveLength(1)
+
+      const pinned = harness.renderer.reconcileHistoryRouterFx(
+        {
+          routed_tier: 'c3',
+          routed_model: 'z-ai/glm-5.3',
+          routing_source: 'router_control_hold',
+        },
+        { hintTimestamp: 1_700_000_001, requestKind: 'text', turnIndex: 2 },
+      )
+      expect(pinned).toBeNull()
+      // Turn 1's strip is still mounted at this point (reconcile walks
+      // oldest-to-newest; a hold turn mounts nothing)…
+      expect(harness.dock.querySelectorAll('.router-fx')).toHaveLength(1)
+
+      harness.renderer.finishHistoryRouterFx()
+      expect(harness.dock.querySelector('.router-fx')).toBeNull()
+    } finally {
+      harness.cleanup()
+    }
+  })
+
+  it('finishHistoryRouterFx keeps the latest turn strip when the latest turn auto-routed', () => {
+    // Positive control for the same gate: when the newest persisted turn WAS a
+    // routing decision, its strip is the latest turn's and must survive the
+    // finish sweep.
+    const harness = makeHistoryRenderer()
+    try {
+      const threadEl = harness.host.firstElementChild!
+      const u1 = document.createElement('div')
+      u1.className = 'msg user'
+      const u2 = document.createElement('div')
+      u2.className = 'msg user'
+      threadEl.appendChild(u1)
+      threadEl.appendChild(u2)
+
+      harness.renderer.prepareHistoryRouterFx()
+      const first = harness.renderer.reconcileHistoryRouterFx(
+        { routed_tier: 'c1', routed_model: 'anthropic/claude-a' },
+        { hintTimestamp: 1_700_000_000, requestKind: 'text', turnIndex: 1 },
+      )
+      const latest = harness.renderer.reconcileHistoryRouterFx(
+        { routed_tier: 'c2', routed_model: 'openai/gpt-b' },
+        { hintTimestamp: 1_700_000_001, requestKind: 'text', turnIndex: 2 },
+      )
+      expect(latest).not.toBeNull()
+
+      harness.renderer.finishHistoryRouterFx()
+      const kept = harness.dock.querySelector<HTMLElement>('.router-fx')
+      expect(kept).toBe(latest)
+      expect(kept!.dataset.turnIndex).toBe('2')
+      expect(first!.isConnected).toBe(false)
     } finally {
       harness.cleanup()
     }

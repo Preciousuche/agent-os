@@ -221,15 +221,25 @@ Useful automation flags:
 | `--workspace-strict` | Restrict read-side file tools to the workspace. |
 | `--workspace-lockdown` | Contain writes to workspace or scratch directory. |
 | `--scratch-dir` | Place temporary scripts/logs/candidate patches in a known directory. |
-| `--timeout` | Set total agent wall-clock timeout. |
+| `--file` / `-f` | Attach a local file; repeat for multiple files. |
+| `--unattended` / `--interactive` | Run without a live approval surface (unattended is default). |
+| `--stateless` / `--clean-room` | Use clean-room prompt bootstrap. |
+| `--stateless-keep-project-rules` | With clean-room bootstrap, keep `AGENTS.md` project rules only. |
+| `--no-memory-capture` | Do not write this invocation to durable searchable memory. |
+| `--session-id` | Target a specific session key/id for cross-invocation continuity. |
+| `--timeout` / `-T` | Set total agent wall-clock timeout in seconds. |
 | `--max-iterations` | Bound the model/tool loop. |
+| `--iteration-timeout-seconds` | Per-iteration timeout in seconds (one LLM call + tool executions). |
+| `--tool-timeout-seconds` | Per-tool execution timeout in seconds. |
+| `--request-timeout-seconds` | Single LLM HTTP/streaming request timeout in seconds. |
 | `--max-provider-retries` | Bound transient provider retries. |
 | `--length-capped-continuations` | Bound automatic continuations after length-limited provider output. |
-| `--thinking` | Override reasoning level. |
+| `--thinking` | Override reasoning level (off, minimal, low, medium, high, xhigh, adaptive). |
 | `--permissions` | Select restricted, bypass, or full permission posture. |
 | `--transcript-path` | Write a JSONL transcript for automation. |
 | `--usage-path` | Write usage JSON. |
 | `--session-db-path` | Persist session replay across invocations. |
+| `--json` | Emit machine-readable JSON output. |
 
 ## Upgrade
 
@@ -340,6 +350,10 @@ agentos providers configure openrouter
 agentos providers status
 ```
 
+`providers status` includes a `circuit` column with the active provider's
+failover circuit-breaker state (`closed`, `half_open`, or `open (42s)`); see
+[`providers-and-models.md`](providers-and-models.md#provider-health-circuit-breaker).
+
 Provider-specific setup examples, including OpenCAP, live in
 [`providers-and-models.md`](providers-and-models.md).
 
@@ -412,6 +426,15 @@ Telegram direct messages always require pairing. Pairing is binary
 default and require an explicit group chat ID, a paired sender, and—by
 default—a bot mention. Any connected Control client may approve, deny, or
 disconnect a pairing.
+
+### Platform-Native Interactive Approvals
+
+Platform-native interactive tool approvals (such as Slack block actions, Telegram inline keyboard callbacks, and Discord message components) allow operators to approve or deny gated tool executions directly using interactive buttons in their messaging app.
+
+For security, interactive approvals are:
+- **Restricted to Direct Messages (DMs)**: Interactive approval prompts are only sent in channel DMs, not group/channel chats, ensuring they cannot be triggered or visible to unauthorized participants in a shared room.
+- **Access Gated**: Each button click/interaction verifies that the clicker's sender ID is paired and authorized under the channel's access policy. Clicking by an unpaired or unauthorized user is dropped and rejected.
+- **Session Bound**: Approval tokens are strictly bound to their originating chat session key. A click received from a different chat context or user session will mismatch and be ignored.
 
 Raw config:
 
@@ -500,6 +523,7 @@ agentos skills search pdf
 agentos skills view pdf-toolkit
 agentos skills install <skill-name>
 agentos skills install <skill-url> --source bankr
+agentos skills install <skill-url> --source aeon
 agentos skills update --all
 agentos skills uninstall <skill-name>
 ```
@@ -547,9 +571,9 @@ allowlist and must never be rendered with a logo or read as a trust signal;
 `publisher` is the only field that answers "who vouches for this". It is empty
 only when it would repeat the resolved brand, so a partner skill is credited
 once rather than twice — a *different* credit survives. That is the
-`stock-premium-lp-manager` case: written from a wallet on bankr.bot but named in
-the wheel's user-skill allowlist, so it carries Bankr's `publisher` and
-`@igoryuzo` as its `author`.
+wallet-published case: a skill written from a wallet on bankr.bot but named in
+the wheel's user-skill allowlist carries Bankr's `publisher` and the author's
+handle (e.g. `@igoryuzo`) as its `author`.
 
 There is deliberately **no `availability` key** in CLI output. Whether the
 agent is currently being offered a skill depends on a chat session's tool
@@ -674,7 +698,7 @@ from a channel.
 ### Announcing to a specific channel
 
 `--announce --channel telegram --to <chat-id>` pins where a job reports, and
-`--account`, `--no-deliver`, `--best-effort`, and `--webhook-url` cover the rest.
+`--account`, `--no-deliver`, `--best-effort-deliver`, and `--webhook-url` cover the rest.
 The in-agent `cron` tool accepts the channel case too, through a `delivery`
 object — also restricted to an interactive CLI or Web caller, so a chat
 participant cannot redirect a job into a room they were never in. Webhook
@@ -683,7 +707,7 @@ delivery and failure destinations stay CLI/Web/RPC-only. See
 
 ### Letting a cron job run shell-based skills
 
-By default, cron jobs of kind `agent_run` run elevated under the `bypass` mode
+By default, cron jobs of kind `agent_turn` run elevated under the `bypass` mode
 (controlled globally by `permissions.cron_default_mode`). This allows them to
 run shell-based commands (like those in skills) without interactive approval prompts.
 
@@ -757,6 +781,29 @@ Tool schemas dominate it — around 7,300 tokens on a stock install, charged on
 every call in every turn — and the command prices each `[tools] profile` against
 the current one so the trade is visible before you make it. A profile is fixed
 for the session, so narrowing it does not disturb the prompt cache.
+
+`agentos cost` aggregates and displays model usage and estimated cost reports from the gateway:
+
+```sh
+agentos cost [--by-model] [--json] [--csv]
+agentos cost --start-date YYYY-MM-DD --end-date YYYY-MM-DD
+agentos cost --agent-id <agent-id> --channel-type <channel-type>
+agentos cost --tool-name <tool-name> --skill <skill-name>
+agentos cost --export /path/to/export.csv
+```
+
+| Option | Purpose |
+| --- | --- |
+| `--by-model` | Group aggregate rows by model. |
+| `--json` | Emit machine-readable JSON. |
+| `--csv` | Emit machine-readable CSV. |
+| `--start-date` | Filter by start date (YYYY-MM-DD). |
+| `--end-date` | Filter by end date (YYYY-MM-DD). |
+| `--agent-id` | Filter by agent ID. |
+| `--channel-type` | Filter by channel type. |
+| `--tool-name` | Filter by tool name. |
+| `--skill` | Filter by skill name. |
+| `--export` | Path to export results (JSON/CSV). |
 
 Use diagnostics and replay when you need to understand why a turn behaved a
 certain way.

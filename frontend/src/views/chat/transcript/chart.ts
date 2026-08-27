@@ -273,6 +273,45 @@ export function candleReadout(candle: ChartCandle, decimals: number): CandleRead
   }
 }
 
+/**
+ * Derive the PNG filename for a chart image export.
+ *
+ * Replaces `.json` (e.g. `bonk.chart.json` -> `bonk.chart.png`) or appends
+ * `.png` if not already an image filename.
+ */
+export function chartImageFilename(name: string | null | undefined): string {
+  const trimmed = (name || '').trim()
+  if (!trimmed) return 'chart.png'
+  if (trimmed.toLowerCase().endsWith('.png')) return trimmed
+  if (trimmed.toLowerCase().endsWith('.json')) {
+    return `${trimmed.slice(0, -5)}.png`
+  }
+  return `${trimmed}.png`
+}
+
+/**
+ * Export a chart instance as a downloaded PNG image.
+ */
+export function exportChartAsImage(
+  chart: { takeScreenshot: () => HTMLCanvasElement },
+  filename: string,
+): boolean {
+  try {
+    const canvas = chart.takeScreenshot()
+    if (!canvas || typeof canvas.toDataURL !== 'function') return false
+    const dataUrl = canvas.toDataURL('image/png')
+    const a = document.createElement('a')
+    a.href = dataUrl
+    a.download = chartImageFilename(filename)
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    return true
+  } catch {
+    return false
+  }
+}
+
 /* ── Injected mounter dependencies ──────────────────────────────────────── */
 
 /**
@@ -534,9 +573,24 @@ export function createChartMounter(deps: ChartMounterDeps) {
       observer.observe(canvasHost)
     }
 
+    const downloadBtn = host.querySelector<HTMLElement>('.msg-artifact-chart__download')
+    let downloadClickListener: ((event: MouseEvent) => void) | null = null
+    if (downloadBtn) {
+      const filename = chartImageFilename(host.dataset.artifactName || payload.title || 'chart')
+      downloadClickListener = (event: MouseEvent): void => {
+        event.preventDefault()
+        event.stopPropagation()
+        exportChartAsImage(chart, filename)
+      }
+      downloadBtn.addEventListener('click', downloadClickListener)
+    }
+
     const entry: LiveChart = {
       applyTheme,
       dispose: () => {
+        if (downloadClickListener && downloadBtn) {
+          downloadBtn.removeEventListener('click', downloadClickListener)
+        }
         // Unsubscribe before remove(): the chart tears its internals down and
         // will not accept the call afterwards.
         crosshairUnsubscribe?.()

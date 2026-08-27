@@ -49,7 +49,6 @@ vi.mock('@/app/providers', () => ({
     ws_url: 'ws://127.0.0.1:18791/ws',
     auth_mode: 'none',
     base_path: '/control',
-    config_path: '/tmp/agentos.toml',
     features: {},
   }),
 }))

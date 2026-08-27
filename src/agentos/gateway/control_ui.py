@@ -82,13 +82,19 @@ def _request_ws_url(request: Request, config: GatewayConfig) -> str:
 
 
 def _build_bootstrap_context(config: GatewayConfig, request: Request) -> dict:
-    """Build the public bootstrap payload consumed by the React application."""
+    """Build the public bootstrap payload consumed by the React application.
+
+    This route is reachable before the console holds a token, so the payload
+    must stay free of host-identifying data: ``config_path`` is an absolute
+    filesystem path that reveals the OS username, and the console already
+    receives it over the authenticated ``doctor.status`` / ``config.get`` RPCs.
+    Keep new fields to what an unauthenticated caller may safely learn.
+    """
     return {
         "version": f"{__version__}+{_TEMPLATE_VERSION_SUFFIX}",
         "ws_url": _request_ws_url(request, config),
         "auth_mode": config.auth.mode,
         "base_path": config.control_ui.base_path,
-        "config_path": config.config_path or "",
         "features": {
             "diagnostics": config.diagnostics_enabled,
         },

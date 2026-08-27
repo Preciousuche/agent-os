@@ -67,6 +67,28 @@ published from a wallet is credited to its author, not to Bankr: it lists the
 author's handle and resolves to no recognized publisher, so it renders unbranded
 rather than sitting in the Partners group.
 
+The Aeon source reads
+[aeonfun/aeon](https://github.com/aeonfun/aeon), which unlike the others
+publishes a real machine-readable index — one `catalog/skills.json` describing
+all 75 of its skills, so browsing costs a single request rather than one per
+skill. Its allowlist therefore exists for a different reason: not because the
+catalog cannot be crawled, but because most of what Aeon publishes does not
+belong in an interactive runtime. Aeon skills are prompts written for scheduled
+GitHub Actions runs, and dozens of them either operate an Aeon instance
+(`aeon-doctor`, `memory-flush`, `aeon-update`) or read Aeon's durable `memory/`
+directory as their actual input.
+
+The allowlisted ones are adapted on install. Their frontmatter declares
+`requires` as a plain list, which AgentOS reads only as a mapping and would
+otherwise discard — so it is rewritten into the `requires.env` form, and the
+Aeon category is remapped onto a real browse bucket. A short note is inserted
+ahead of the skill's own text saying that `memory/`, `./secretcurl`, and
+`./notify` are absent here and what to do instead. The prose itself is left
+alone, so the installed file still reads as Aeon wrote it.
+
+Some Aeon skills want an API key you supply yourself, and a few want a paid
+plan; each catalog card lists what it needs under its setup steps.
+
 ## How a Skill Is Described
 
 Four separate facts describe an installed skill. They are easy to confuse, and

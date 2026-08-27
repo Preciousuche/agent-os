@@ -640,24 +640,41 @@ class SessionStorage:
         session = await self.get_session(session_key)
         if session is None:
             return
-        await self.conn.execute(
-            "DELETE FROM transcript_entries WHERE session_id = ?",
-            (session.session_id,),
-        )
-        await self.conn.execute(
-            "DELETE FROM compacted_transcript_entries WHERE session_id = ?",
-            (session.session_id,),
-        )
-        await self.conn.execute(
-            "DELETE FROM session_summaries WHERE session_id = ?",
-            (session.session_id,),
-        )
-        await self.conn.execute(
-            "DELETE FROM session_context_states WHERE session_id = ?",
-            (session.session_id,),
-        )
-        await self.conn.execute("DELETE FROM sessions WHERE session_key = ?", (session_key,))
-        await self.conn.commit()
+        # Session keys are deterministic, so any row left behind here resurfaces
+        # in the next session that reuses the key. Delete every session-scoped
+        # table in one transaction: no table declares a foreign key, so a partial
+        # failure would otherwise orphan children under a deleted session.
+        await self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            await self.conn.execute(
+                "DELETE FROM transcript_entries WHERE session_id = ?",
+                (session.session_id,),
+            )
+            await self.conn.execute(
+                "DELETE FROM compacted_transcript_entries WHERE session_id = ?",
+                (session.session_id,),
+            )
+            await self.conn.execute(
+                "DELETE FROM session_summaries WHERE session_id = ?",
+                (session.session_id,),
+            )
+            await self.conn.execute(
+                "DELETE FROM session_context_states WHERE session_id = ?",
+                (session.session_id,),
+            )
+            await self.conn.execute(
+                "DELETE FROM agent_tasks WHERE session_key = ?",
+                (session_key,),
+            )
+            await self.conn.execute(
+                "DELETE FROM memory_durable_receipts WHERE session_key = ?",
+                (session_key,),
+            )
+            await self.conn.execute("DELETE FROM sessions WHERE session_key = ?", (session_key,))
+            await self.conn.commit()
+        except Exception:
+            await self.conn.rollback()
+            raise
 
     async def prune_stale_sessions(self, before_ms: int) -> int:
         """Delete sessions not updated since before_ms epoch ms. Returns count deleted."""

@@ -13,6 +13,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from agentos.cli.gateway_rpc import (
+    default_gateway_token,
     default_gateway_url,
     rpc_error_exit_code,
     run_gateway_sync,
@@ -43,7 +44,7 @@ async def _try_gateway_skill_mutation(
 
     client = gateway_client_module.GatewayClient()
     try:
-        await client.connect(default_gateway_url())
+        await client.connect(default_gateway_url(), token=default_gateway_token())
     except (SystemExit, ConnectionError, OSError):
         await client.close()
         return None
@@ -370,7 +371,8 @@ def skills_install(
         "--source",
         "-s",
         help=(
-            "Source (clawhub, github, bankr). GitHub accepts owner/repo, owner/repo:path, "
+            "Source (clawhub, github, bankr, capminal, aeon). GitHub accepts owner/repo, "
+            "owner/repo:path, "
             "or GitHub URLs. Bankr accepts a BankrBot/skills URL or a bankr.bot skill URL."
         ),
     ),

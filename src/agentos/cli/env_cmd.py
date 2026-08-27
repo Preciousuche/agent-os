@@ -17,7 +17,11 @@ from typing import Any
 
 import typer
 
-from agentos.cli.gateway_rpc import default_gateway_url, rpc_error_exit_code
+from agentos.cli.gateway_rpc import (
+    default_gateway_token,
+    default_gateway_url,
+    rpc_error_exit_code,
+)
 from agentos.cli.output import emit_error, print_json
 from agentos.cli.ui import console
 
@@ -42,7 +46,7 @@ async def _try_gateway(method: str, params: dict[str, Any], *, json_output: bool
 
     client = gateway_client_module.GatewayClient()
     try:
-        await client.connect(default_gateway_url())
+        await client.connect(default_gateway_url(), token=default_gateway_token())
     except (SystemExit, ConnectionError, OSError):
         await client.close()
         return None

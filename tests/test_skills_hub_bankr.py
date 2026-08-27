@@ -150,7 +150,7 @@ async def test_search_empty_query_lists_all_bankr_skills(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_search_builds_provider_logo_and_identifier(monkeypatch) -> None:
+async def test_search_builds_provider_and_identifier_without_payload_logo(monkeypatch) -> None:
     import httpx
 
     monkeypatch.setattr(httpx, "AsyncClient", _AsyncClient)
@@ -160,13 +160,13 @@ async def test_search_builds_provider_logo_and_identifier(monkeypatch) -> None:
 
     alchemy = by_name["alchemy"]
     assert alchemy.provider == "Alchemy"
-    assert alchemy.logo == (
-        "https://raw.githubusercontent.com/BankrBot/skills/main/alchemy/alchemy.svg"
-    )
+    # A catalog-declared logo is ignored: partner-catalog cards wear the Bankr
+    # brand mark the tab wears, not whatever artwork the repository ships.
+    assert alchemy.logo == ""
     assert alchemy.identifier == "https://github.com/BankrBot/skills/tree/main/alchemy"
 
-    # Null logo in the catalog → empty logo, but the Bankr brand emoji fills in
-    # as the avatar so cards never render a bare initials box.
+    # Same for a null logo; the Bankr brand emoji fills in as the avatar so
+    # cards never render a bare initials box.
     assert by_name["bankr"].logo == ""
     assert by_name["bankr"].emoji == "📺"
     assert by_name["alchemy"].emoji == "📺"
@@ -287,16 +287,21 @@ async def test_all_entries_failing_returns_empty_without_raising(monkeypatch) ->
 
 
 class _DefaultAllowlistClient(_AsyncClient):
-    """Serves the real default slugs plus the default registry skill."""
+    """Serves the real default slugs, and any registry skill that is asked for."""
 
     catalogs = {
         "bankr": _catalog("bankr", logo=None),
         "bankr-token-scam-analysis": _catalog("bankr-token-scam-analysis", logo=None),
+        "aero-stock-lp": _catalog("aero-stock-lp", logo="logo.svg"),
     }
     skill_mds = {
         "bankr": b"---\nname: bankr\ndescription: Trading agent\n---\n# Bankr\n",
         "bankr-token-scam-analysis": (
             b"---\nname: scam\ndescription: Scans tokens for scams\n---\n# Scan\n"
+        ),
+        "aero-stock-lp": (
+            b"---\nname: aero-stock-lp\ndescription: LP tokenized stocks onchain\n"
+            b"---\n# Aero stock LP\n"
         ),
     }
 
@@ -308,28 +313,29 @@ class _DefaultAllowlistClient(_AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_default_allowlist_loads_the_shipped_repo_and_registry_skills(monkeypatch) -> None:
+async def test_default_allowlist_loads_exactly_the_shipped_repo_skills(monkeypatch) -> None:
     import httpx
 
     monkeypatch.setattr(httpx, "AsyncClient", _DefaultAllowlistClient)
 
-    # Defaults (no allowlist args) → exactly these, nothing else.
-    assert _ALLOWED_SLUGS == ("bankr", "bankr-token-scam-analysis")
-    assert _ALLOWED_USER_SKILLS == (
-        "0xd4fd8d6f0f64f3d0ba015b645ca8f8c13355c24a/stock-premium-lp-manager",
-    )
+    # Defaults (no allowlist args) → exactly these, nothing else. The registry
+    # half ships empty: ``stock-premium-lp-manager`` was retired in favour of
+    # the repo-published ``aero-stock-lp``.
+    assert _ALLOWED_SLUGS == ("bankr", "bankr-token-scam-analysis", "aero-stock-lp")
+    assert _ALLOWED_USER_SKILLS == ()
 
     results = await BankrSource().search("")
 
     assert {r.name for r in results} == {
         "bankr",
         "bankr-token-scam-analysis",
-        "stock-premium-lp-manager",
+        "aero-stock-lp",
     }
-    # Two repo skills → two catalog.json + two SKILL.md fetches, no tree crawl.
-    # The registry skill needs neither: its payload carries the body inline.
-    assert _DefaultAllowlistClient.catalog_calls == 2
-    assert _DefaultAllowlistClient.skill_md_calls == 2
+    # Three repo skills → three catalog.json + three SKILL.md fetches, no tree
+    # crawl. No registry skill is allowlisted, so the client's api.bankr.bot
+    # branch is never reached.
+    assert _DefaultAllowlistClient.catalog_calls == 3
+    assert _DefaultAllowlistClient.skill_md_calls == 3
 
 
 @pytest.mark.asyncio

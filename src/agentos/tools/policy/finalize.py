@@ -75,7 +75,12 @@ def _has_live_approval_surface(ctx: ToolContext | None) -> bool:
     if ctx.interaction_mode is InteractionMode.INTERACTIVE:
         return True
     if ctx.caller_kind is CallerKind.CHANNEL:
-        return True
+        if ctx.session_key:
+            from agentos.session.keys import derive_chat_type
+            from agentos.session.models import ChatType
+
+            return derive_chat_type(ctx.session_key) == ChatType.DIRECT
+        return False
     return False
 
 

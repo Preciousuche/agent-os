@@ -836,6 +836,21 @@ export function createRouterFxRenderer(deps: RouterFxRendererDeps) {
     wrap.remove()
   }
 
+  /**
+   * Remove every strip in the dock that belongs to the current session. Used
+   * whenever a turn is pinned: the pinned turn renders no strip of its own, so
+   * any current-session strip would read as this turn's selection (issue #345).
+   * Session-scoped — strips from other sessions are untouched.
+   */
+  function sweepSessionStrips(): void {
+    if (!thread()) return
+    const currentSessionKey = sessionKey()
+    strips('.router-fx').forEach((el) => {
+      if (el.dataset.sessionKey && el.dataset.sessionKey !== currentSessionKey) return
+      removeStrip(el)
+    })
+  }
+
   /* ── dock mount (chat.js:3900-3927) ───────────────────────────────────── */
 
   function strips(selector = '.router-fx'): RouterFxStripElement[] {
@@ -1085,6 +1100,11 @@ export function createRouterFxRenderer(deps: RouterFxRendererDeps) {
       return false
     }
     if (isRoutePinned()) {
+      // A pinned turn renders no strip of its own, and the pin was already set
+      // when this send flow started — sweep the dock so the previous turn's
+      // settled strip cannot linger above the composer while this pinned turn
+      // runs (issue #345, same session-scoped sweep as handleRouterDecision).
+      sweepSessionStrips()
       diag('router_scan.schedule.skip.route_pinned', {})
       return false
     }
@@ -1137,6 +1157,9 @@ export function createRouterFxRenderer(deps: RouterFxRendererDeps) {
       return false
     }
     if (isRoutePinned()) {
+      // Same sweep as scheduleBeginScan: the pin was set before this scan could
+      // start, so no strip belongs above the composer for this pinned turn.
+      sweepSessionStrips()
       diag('router_scan.skip.route_pinned', {})
       return false
     }
@@ -1486,15 +1509,11 @@ export function createRouterFxRenderer(deps: RouterFxRendererDeps) {
       // tier that lends it settings (say c1) alongside the chosen model (say
       // glm-5.2), so learning it would rewrite c1's model in the registry and
       // mislabel later strips for a tier that never ran that model.
-      // Also sweep a live strip already on screen: the pin may have been set
-      // mid-turn, after the scan began.
-      if (thread()) {
-        strips('.router-fx[data-live="true"]').forEach((el) => {
-          if (!el.dataset.turnIndex || el.dataset.turnIndex === String(turnIndex)) {
-            removeStrip(el)
-          }
-        })
-      }
+      // A pinned turn renders no strip of its own, so sweep the dock of ANY
+      // strip for this session — a live one if the pin landed mid-scan, and a
+      // settled one from an earlier turn that would otherwise linger above the
+      // composer and read as this turn's selection (issue #345).
+      sweepSessionStrips()
       diag('router_decision.skip.route_pinned', summarizePayload(payload))
       return
     }
@@ -1735,8 +1754,20 @@ export function createRouterFxRenderer(deps: RouterFxRendererDeps) {
   function finishHistoryRouterFx(): void {
     flushPendingRouterDecisions()
     const currentSessionKey = sessionKey()
+    // A stamped strip may survive only when it is the LATEST turn's (or a live
+    // scan for the current turn). An older turn's strip must not linger: the
+    // reconciliation above walks history oldest-to-newest, and when the latest
+    // turn was pinned `historyDecisionFromUsage` returns null for it — so the
+    // previous Auto turn's strip would otherwise survive a reload and read as
+    // the pinned turn's selection (issue #345).
+    const latestTurnIndex = String(countUserMessages())
     strips().forEach((el) => {
-      if (el.dataset.sessionKey === currentSessionKey && el.dataset.turnIndex) return
+      const keep =
+        el.dataset.sessionKey === currentSessionKey &&
+        (el.dataset.live === 'true' ||
+          el.dataset.scanning === 'true' ||
+          el.dataset.turnIndex === latestTurnIndex)
+      if (keep) return
       removeStrip(el)
     })
     if (!pref.enabled) clearRouterFxVisuals('preference_disabled_history')

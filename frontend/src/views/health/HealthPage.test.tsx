@@ -22,7 +22,6 @@ vi.mock('@/app/providers', () => ({
     ws_url: 'ws://127.0.0.1:18791/ws',
     auth_mode: 'none',
     base_path: '/control',
-    config_path: '/tmp/agentos.toml',
     features: { diagnostics: true },
   }),
 }))
@@ -137,19 +136,25 @@ describe('HealthPage', () => {
     await waitFor(() => expect(screen.getAllByText('Still good').length).toBeGreaterThan(0))
   })
 
-  it('uses config-target fix steps when the stored wsUrl equals the default (health.js:227-238)', async () => {
-    // Legacy saveConnectionSettings stores the default URL itself (app.js:210):
-    // a stored-but-equal URL must still count as "uses default".
+  it('uses gateway-target fix steps even when the stored wsUrl equals the default', async () => {
+    // Legacy read the host config path off the inlined bootstrap and produced
+    // --config fix steps here. /api/bootstrap is unauthenticated, so it no
+    // longer carries that path: the synthetic offline report must fall back to
+    // the gateway/bind target and must not render a Config context row.
     localStorage.setItem('agentos.wsUrl', 'ws://127.0.0.1:18791/ws')
     mockRpc.call.mockRejectedValue(new Error('boom'))
     renderPage()
     await waitFor(() =>
       expect(screen.getAllByText('Gateway health report unavailable').length).toBeGreaterThan(0),
     )
-    expect(screen.getByText('agentos doctor --config /tmp/agentos.toml --json')).toBeInTheDocument()
-    expect(screen.getByText('agentos gateway start --config /tmp/agentos.toml')).toBeInTheDocument()
-    // Config context row present in the synthetic error report.
-    expect(screen.getByText('Config')).toBeInTheDocument()
+    expect(
+      screen.getByText('agentos doctor --gateway ws://127.0.0.1:18791/ws --json'),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText('agentos gateway start --bind 127.0.0.1 --port 18791'),
+    ).toBeInTheDocument()
+    expect(screen.queryByText('Config')).not.toBeInTheDocument()
+    expect(screen.queryByText('/tmp/agentos.toml')).not.toBeInTheDocument()
   })
 
   it('uses gateway-target fix steps when the stored wsUrl differs from the default', async () => {

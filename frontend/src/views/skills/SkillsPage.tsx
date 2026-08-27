@@ -24,6 +24,7 @@ import '@/i18n/en/skills'
 import { useRpc } from '@/app/providers'
 import agentosMarkUrl from '@/assets/agentos-mark.png'
 import bankrSymbolUrl from '@/assets/bankr-symbol.svg'
+import aeonSymbolUrl from '@/assets/aeon-symbol.png'
 import capminalSymbolUrl from '@/assets/capminal-symbol.svg'
 import gmgnSymbolUrl from '@/assets/gmgn-symbol.png'
 import robinhoodSymbolUrl from '@/assets/robinhood-symbol.png'
@@ -79,17 +80,32 @@ import {
 // wired either way so Bankr skills remain reachable via Community.
 const SHOW_BANKR = true
 const SHOW_CAPMINAL = true
+const SHOW_AEON = true
 
-type Tab = 'installed' | 'bankr' | 'capminal' | 'robinhood' | 'community'
-type RegistryGroup = 'bankr' | 'capminal' | 'community'
-type PartnerBrand = 'bankr' | 'capminal' | 'robinhood'
+type Tab = 'installed' | 'bankr' | 'capminal' | 'aeon' | 'robinhood' | 'community'
+type RegistryGroup = 'bankr' | 'capminal' | 'aeon' | 'community'
+type PartnerBrand = 'bankr' | 'capminal' | 'aeon' | 'robinhood'
+// Drives arrow-key focus movement, so it must stay in lockstep with the order
+// the buttons are rendered in below.
 const TAB_ORDER: Tab[] = [
   'installed',
-  ...(SHOW_BANKR ? ['bankr' as const] : []),
-  ...(SHOW_CAPMINAL ? ['capminal' as const] : []),
   'robinhood',
+  ...(SHOW_BANKR ? ['bankr' as const] : []),
+  ...(SHOW_AEON ? ['aeon' as const] : []),
+  ...(SHOW_CAPMINAL ? ['capminal' as const] : []),
   'community',
 ]
+
+/**
+ * Sources that own a tab, and so must not also show up under Community.
+ * Derived from the SHOW_ flags rather than restated, so hiding a partner's tab
+ * is one edit and its rows fall back into Community automatically.
+ */
+const hiddenRegistrySources: ReadonlySet<string> = new Set(
+  (
+    [SHOW_BANKR ? 'bankr' : '', SHOW_CAPMINAL ? 'capminal' : '', SHOW_AEON ? 'aeon' : ''] as const
+  ).filter(Boolean),
+)
 
 // The bundled brand artwork stays a client-side asset: a local import is not
 // something a SKILL.md could carry. Membership, however, is the payload's call —
@@ -97,6 +113,7 @@ const TAB_ORDER: Tab[] = [
 const PARTNER_BRANDS: Record<PartnerBrand, { label: string; asset: string }> = {
   bankr: { label: 'Bankr', asset: bankrSymbolUrl },
   capminal: { label: 'Capminal', asset: capminalSymbolUrl },
+  aeon: { label: 'Aeon', asset: aeonSymbolUrl },
   robinhood: { label: 'Robinhood', asset: robinhoodSymbolUrl },
 }
 
@@ -128,6 +145,11 @@ function registryIntro(): Record<
       title: t('skills.capminalTitle'),
       description: t('skills.capminalDesc'),
       notice: t('skills.capminalNotice'),
+    },
+    aeon: {
+      title: t('skills.aeonTitle'),
+      description: t('skills.aeonDesc'),
+      notice: t('skills.aeonNotice'),
     },
   }
 }
@@ -262,6 +284,9 @@ function LogoBadge({ item, cls }: { item: RegistryItem; cls: string }) {
     }
     if (item.source?.toLowerCase() === 'capminal') {
       return <PartnerLogo brand="capminal" className={cls} decorative />
+    }
+    if (item.source?.toLowerCase() === 'aeon') {
+      return <PartnerLogo brand="aeon" className={cls} decorative />
     }
     return <span className={`${cls} ${cls}--initials`}>{initials(item.provider || item.name)}</span>
   }
@@ -663,11 +688,13 @@ export function SkillsPage() {
   // Registry (bankr/community) query text + debounced community query.
   const [bankrQuery, setBankrQuery] = useState('')
   const [capminalQuery, setCapminalQuery] = useState('')
+  const [aeonQuery, setAeonQuery] = useState('')
   const [robinhoodQuery, setRobinhoodQuery] = useState('')
   const [communityText, setCommunityText] = useState('')
   const [communityQuery, setCommunityQuery] = useState('')
   const [bankrCat, setBankrCat] = useState('all')
   const [capminalCat, setCapminalCat] = useState('all')
+  const [aeonCat, setAeonCat] = useState('all')
   const [robinhoodStatus, setRobinhoodStatus] = useState<StatusFilter>('all')
   const [communityCat, setCommunityCat] = useState('all')
   const [githubUrl, setGithubUrl] = useState('')
@@ -751,6 +778,21 @@ export function SkillsPage() {
     },
   })
 
+  const aeonSnapshot = useQuery<RegistryItem[]>({
+    queryKey: ['skills.search', 'aeon'],
+    enabled: SHOW_AEON && tab === 'aeon',
+    refetchOnWindowFocus: false,
+    queryFn: async () => {
+      await rpc.waitForConnection()
+      const data = await rpc.call<SearchResponse>('skills.search', {
+        query: '',
+        limit: 500,
+        source: 'aeon',
+      })
+      return data.results ?? []
+    },
+  })
+
   const communitySnapshot = useQuery<RegistryItem[]>({
     queryKey: ['skills.search', 'community'],
     enabled: tab === 'community',
@@ -758,7 +800,7 @@ export function SkillsPage() {
     queryFn: async () => {
       await rpc.waitForConnection()
       const data = await rpc.call<SearchResponse>('skills.search', { query: '', limit: 500 })
-      return communityFilter(data.results ?? [], SHOW_BANKR, SHOW_CAPMINAL)
+      return communityFilter(data.results ?? [], hiddenRegistrySources)
     },
   })
 
@@ -775,7 +817,7 @@ export function SkillsPage() {
         query: communityQuery,
         limit: 100,
       })
-      return communityFilter(data.results ?? [], SHOW_BANKR, SHOW_CAPMINAL)
+      return communityFilter(data.results ?? [], hiddenRegistrySources)
     },
   })
 
@@ -972,6 +1014,15 @@ export function SkillsPage() {
     [bankrSnapshot.data, sessionInstalls],
   )
 
+  const aeonRows = useMemo(
+    () =>
+      mergeRegistryRows(
+        aeonSnapshot.data ?? [],
+        sessionInstalls.filter((r) => r.source === 'aeon'),
+      ),
+    [aeonSnapshot.data, sessionInstalls],
+  )
+
   const capminalRows = useMemo(
     () =>
       mergeRegistryRows(
@@ -986,7 +1037,7 @@ export function SkillsPage() {
     () =>
       mergeRegistryRows(
         communitySnapshot.data ?? [],
-        communityFilter(sessionInstalls, SHOW_BANKR, SHOW_CAPMINAL),
+        communityFilter(sessionInstalls, hiddenRegistrySources),
       ),
     [communitySnapshot.data, sessionInstalls],
   )
@@ -1018,7 +1069,9 @@ export function SkillsPage() {
         ? [bankrRows]
         : d.group === 'capminal'
           ? [capminalRows]
-          : [communityRows, communityBrowse, communitySearch.data]
+          : d.group === 'aeon'
+            ? [aeonRows]
+            : [communityRows, communityBrowse, communitySearch.data]
     for (const pool of pools) {
       const hit = (pool ?? []).find((r) => registryKey(r) === d.key)
       if (hit) return hit
@@ -1029,6 +1082,7 @@ export function SkillsPage() {
   const refresh = () => {
     if (tab === 'bankr') void bankrSnapshot.refetch()
     else if (tab === 'capminal') void capminalSnapshot.refetch()
+    else if (tab === 'aeon') void aeonSnapshot.refetch()
     else if (tab === 'community') {
       void communitySnapshot.refetch()
       if (communityQuery) void communitySearch.refetch()
@@ -1066,6 +1120,14 @@ export function SkillsPage() {
             icon={<PackageIcon aria-hidden="true" />}
             onSelect={setTab}
           />
+          <TabButton
+            current={tab}
+            tab="robinhood"
+            label={PARTNER_BRANDS.robinhood.label}
+            description={t('skills.tabRobinhoodDesc')}
+            icon={<PartnerLogo brand="robinhood" className="sk-tab__brand" decorative />}
+            onSelect={setTab}
+          />
           {SHOW_BANKR ? (
             <TabButton
               current={tab}
@@ -1073,6 +1135,16 @@ export function SkillsPage() {
               label={PARTNER_BRANDS.bankr.label}
               description={t('skills.tabPartnerDesc')}
               icon={<PartnerLogo brand="bankr" className="sk-tab__brand" decorative />}
+              onSelect={setTab}
+            />
+          ) : null}
+          {SHOW_AEON ? (
+            <TabButton
+              current={tab}
+              tab="aeon"
+              label={PARTNER_BRANDS.aeon.label}
+              description={t('skills.tabPartnerDesc')}
+              icon={<PartnerLogo brand="aeon" className="sk-tab__brand" decorative />}
               onSelect={setTab}
             />
           ) : null}
@@ -1086,14 +1158,6 @@ export function SkillsPage() {
               onSelect={setTab}
             />
           ) : null}
-          <TabButton
-            current={tab}
-            tab="robinhood"
-            label={PARTNER_BRANDS.robinhood.label}
-            description={t('skills.tabRobinhoodDesc')}
-            icon={<PartnerLogo brand="robinhood" className="sk-tab__brand" decorative />}
-            onSelect={setTab}
-          />
           <TabButton
             current={tab}
             tab="community"
@@ -1202,6 +1266,25 @@ export function SkillsPage() {
           busyKeys={busyKeys}
           onOpen={(item) =>
             setDialog({ kind: 'registry', group: 'capminal', key: registryKey(item), item })
+          }
+          onInstall={runInstall}
+        />
+      ) : null}
+
+      {SHOW_AEON && tab === 'aeon' ? (
+        <RegistryPanel
+          group="aeon"
+          snapshot={aeonSnapshot.data ?? []}
+          loading={aeonSnapshot.isLoading}
+          error={aeonSnapshot.isError ? String(aeonSnapshot.error) : ''}
+          query={aeonQuery}
+          onQuery={setAeonQuery}
+          category={aeonCat}
+          onCategory={setAeonCat}
+          forceArmed={forceArmed}
+          busyKeys={busyKeys}
+          onOpen={(item) =>
+            setDialog({ kind: 'registry', group: 'aeon', key: registryKey(item), item })
           }
           onInstall={runInstall}
         />

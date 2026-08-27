@@ -550,13 +550,7 @@ def test_upload_unauthenticated_rejected() -> None:
 
 
 def test_upload_rejects_query_token_when_disallowed_for_multipart() -> None:
-    """Query-string tokens are rejected for the multipart upload endpoint.
-
-    The existing JSON-RPC routes accept ``?token=…`` as a convenience for
-    browser-side consumers, but a multipart POST is the kind of request a
-    malicious cross-origin page can craft, so we force the Authorization header
-    for /api/v1/files/upload specifically.
-    """
+    """Query-string tokens are rejected for all endpoints including multipart uploads."""
     pytest.importorskip("starlette.testclient")
     from starlette.applications import Starlette
     from starlette.testclient import TestClient
@@ -572,12 +566,168 @@ def test_upload_rejects_query_token_when_disallowed_for_multipart() -> None:
     app.add_middleware(AuthMiddleware, config=config)
 
     with TestClient(app) as client:
-        # Auth mode passes the AuthMiddleware via the query token (legacy
-        # convenience) but the upload handler MUST refuse it.
+        # Query-string token is rejected by AuthMiddleware with 401
         response = client.post(
             "/api/v1/files/upload?token=secret",
             files={"file": ("x.pdf", b"%PDF-1.4\n", "application/pdf")},
         )
     assert response.status_code == 401, response.text
     body: dict[str, Any] = response.json()
-    assert "Authorization" in body.get("error", "") or "header" in body.get("error", "").lower()
+    assert body.get("code") == "UNAUTHORIZED" or "Authorization" in body.get("error", "")
+
+
+# ---------------------------------------------------------------------------
+# Size-cap tests: the body must never be fully buffered before the cap runs.
+#
+# The transcription case lives here rather than next to the other audio-route
+# tests so the whole size-cap surface is covered in one place.
+# ---------------------------------------------------------------------------
+
+
+def test_upload_route_reads_bounded_and_skips_store_on_oversize(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An oversize part is caught by a bounded read, never handed to the store.
+
+    ``UploadFile.read`` must be given an explicit ceiling (never the unbounded
+    default of ``-1``) so the whole body is not materialised in the process.
+    """
+
+    pytest.importorskip("starlette.testclient")
+    from starlette.applications import Starlette
+    from starlette.datastructures import UploadFile
+    from starlette.testclient import TestClient
+
+    from agentos.gateway.config import GatewayConfig
+    from agentos.gateway.uploads import UploadStore, register_upload_routes
+
+    read_sizes: list[int] = []
+    original_read = UploadFile.read
+
+    async def recording_read(self: UploadFile, size: int = -1) -> bytes:
+        read_sizes.append(size)
+        return await original_read(self, size)
+
+    monkeypatch.setattr(UploadFile, "read", recording_read)
+
+    store = UploadStore(marker_dir=None, ttl_seconds=600, max_file_bytes=30 * 1024 * 1024)
+    put_sizes: list[int] = []
+    original_put = store.put
+
+    async def recording_put(name: str, mime: str, payload: bytes) -> str:
+        put_sizes.append(len(payload))
+        return await original_put(name, mime, payload)
+
+    monkeypatch.setattr(store, "put", recording_put)
+
+    app = Starlette(debug=False)
+    register_upload_routes(app, config=GatewayConfig(), store=store)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/files/upload",
+            files={"file": ("big.txt", b"a" * (TEXT_ATTACHMENT_BYTES + 1), "text/plain")},
+        )
+
+    assert response.status_code == 413, response.text
+    assert response.json()["code"] == "TOO_LARGE"
+    assert put_sizes == [], "oversize payload must never reach the store"
+    assert read_sizes, "handler never read the upload"
+    assert all(0 < size <= TEXT_ATTACHMENT_BYTES + 1 for size in read_sizes), read_sizes
+
+
+def test_upload_route_rejects_declared_content_length_without_parsing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Content-Length above the cap is refused before the form is parsed."""
+
+    pytest.importorskip("starlette.testclient")
+    from starlette.applications import Starlette
+    from starlette.requests import Request
+
+    from agentos.gateway.config import GatewayConfig
+    from agentos.gateway.uploads import UploadStore, register_upload_routes
+
+    def exploding_form(self: Request, **kwargs: Any) -> Any:
+        raise AssertionError("form() must not be awaited for an oversize Content-Length")
+
+    monkeypatch.setattr(Request, "form", exploding_form)
+
+    store = UploadStore(marker_dir=None, ttl_seconds=600, max_file_bytes=1024)
+    app = Starlette(debug=False)
+    register_upload_routes(app, config=GatewayConfig(), store=store)
+    handler = app.router.routes[-1].endpoint  # type: ignore[attr-defined]
+
+    async def receive() -> Any:
+        raise AssertionError("request body must not be consumed")
+
+    scope: dict[str, Any] = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/api/v1/files/upload",
+        "raw_path": b"/api/v1/files/upload",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [
+            (b"content-type", b"multipart/form-data; boundary=testboundary"),
+            (b"content-length", str(8 * 1024 * 1024 * 1024).encode("ascii")),
+        ],
+    }
+
+    response = asyncio.run(handler(Request(scope, receive)))
+
+    assert response.status_code == 413
+    assert json.loads(bytes(response.body))["code"] == "TOO_LARGE"
+
+
+def test_transcribe_route_reads_bounded_and_skips_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The transcription route applies the same bounded read as uploads."""
+
+    pytest.importorskip("starlette.testclient")
+    from starlette.applications import Starlette
+    from starlette.datastructures import UploadFile
+    from starlette.testclient import TestClient
+
+    from agentos.gateway import audio_transcription
+    from agentos.gateway.config import GatewayConfig
+
+    monkeypatch.setattr(audio_transcription, "_MAX_TRANSCRIPTION_BYTES", 64)
+
+    read_sizes: list[int] = []
+    original_read = UploadFile.read
+
+    async def recording_read(self: UploadFile, size: int = -1) -> bytes:
+        read_sizes.append(size)
+        return await original_read(self, size)
+
+    monkeypatch.setattr(UploadFile, "read", recording_read)
+
+    provider_calls: list[int] = []
+
+    class _RefusingProvider:
+        async def transcribe_audio(self, request: Any) -> Any:
+            provider_calls.append(len(request.audio_bytes))
+            raise AssertionError("provider must not see an oversize upload")
+
+    config = GatewayConfig()
+    config.audio.enabled = True
+    app = Starlette(debug=False)
+    audio_transcription.register_audio_transcription_routes(
+        app, config=config, provider_factory=lambda _cfg: _RefusingProvider()
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/audio/transcribe",
+            files={"file": ("voice.webm", b"a" * 4096, "audio/webm")},
+        )
+
+    assert response.status_code == 413, response.text
+    assert response.json()["code"] == "TOO_LARGE"
+    assert provider_calls == []
+    assert read_sizes, "handler never read the upload"
+    assert all(0 < size <= 65 for size in read_sizes), read_sizes

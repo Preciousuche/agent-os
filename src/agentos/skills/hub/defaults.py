@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from agentos.skills.hub.aeon import AeonSource
 from agentos.skills.hub.bankr import BankrSource
 from agentos.skills.hub.capminal import CapminalSource
 from agentos.skills.hub.clawhub import ClawHubSource
@@ -30,6 +31,7 @@ def get_default_skill_router() -> SourceRouter:
             # otherwise shadow the Bankr rows carrying category/logo/setup.
             BankrSource(token=os.environ.get("GITHUB_TOKEN")),
             CapminalSource(token=os.environ.get("GITHUB_TOKEN")),
+            AeonSource(token=os.environ.get("GITHUB_TOKEN")),
             GitHubSource(token=os.environ.get("GITHUB_TOKEN")),
         ]
         _default_router = SourceRouter(sources)

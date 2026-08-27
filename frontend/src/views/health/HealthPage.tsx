@@ -15,9 +15,7 @@ import {
   gatewayUnavailableFixSteps,
   impactCountsFromSeverity,
   impactValue,
-  isLocalGatewayUrl,
   statusLabel,
-  usesDefaultGatewayUrl,
   visibleEvidenceEntries,
   type Finding,
   type GroupKind,
@@ -422,7 +420,6 @@ export function HealthPage() {
     /* blocked storage: fall back to bootstrap */
   }
   const gatewayUrl = storedWsUrl || bootstrap.ws_url || ''
-  const configPath = bootstrap.config_path || ''
 
   const query = useQuery<HealthReport>({
     queryKey: ['doctor.status', 'main'],
@@ -468,12 +465,12 @@ export function HealthPage() {
     findingsNode = <article className="health-empty">{t('health.findingsLoading')}</article>
   } else if (query.isError) {
     // health.js:86-115 — synthetic gateway.unavailable report + finding.
-    // health.js:227-238 — usesDefault is URL-equality against the default RPC
-    // URL (bootstrap ws_url stands in for legacy App.getDefaultRpcUrl()), not
-    // mere absence of the localStorage override: legacy saveConnectionSettings
-    // stores the default URL itself on save (app.js:210).
-    const usesDefault = usesDefaultGatewayUrl(gatewayUrl, bootstrap.ws_url || '')
-    const errorConfigPath = usesDefault && isLocalGatewayUrl(gatewayUrl) ? configPath : ''
+    // Legacy read the host config path off the inlined bootstrap and, when the
+    // gateway URL was the default one, produced --config fix steps from it
+    // (health.js:227-238). /api/bootstrap is unauthenticated, so it no longer
+    // carries that path: the offline report has no config path to target and
+    // falls back to the gateway/bind pair. The live report is unaffected — its
+    // configPath comes from the authenticated doctor.status RPC.
     const errorReport: HealthReport = {
       status: 'unavailable',
       ready: false,
@@ -484,7 +481,7 @@ export function HealthPage() {
       // distinct "Health report unavailable" per health.js:89.)
       summary: t('health.gatewayUnavailableTitle'),
       gatewayUrl,
-      configPath: errorConfigPath,
+      configPath: '',
       counts: { error: 1, warn: 0, info: 0, ok: 0 },
       impactCounts: { blocks_ready: 1, degrades: 0, optional: 0, none: 0 },
     }
@@ -495,8 +492,8 @@ export function HealthPage() {
       surface: 'gateway',
       title: t('health.gatewayUnavailableTitle'),
       detail: gatewayUnavailableDetail(gatewayUrl, query.error),
-      evidence: errorConfigPath ? { gatewayUrl, configPath: errorConfigPath } : { gatewayUrl },
-      fixSteps: gatewayUnavailableFixSteps(gatewayUrl, errorConfigPath, usesDefault),
+      evidence: { gatewayUrl },
+      fixSteps: gatewayUnavailableFixSteps(gatewayUrl, '', false),
       restartRequired: false,
     }
     railNode = <StatusRail report={errorReport} fallbackGatewayUrl={gatewayUrl} />

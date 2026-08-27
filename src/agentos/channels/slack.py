@@ -729,6 +729,21 @@ class SlackChannel:
             if not self._verify_signature(body, timestamp, signature):
                 return Response(status_code=401)
         else:
+            content_type = request.headers.get("content-type", "")
+            if content_type.startswith("application/x-www-form-urlencoded"):
+                import urllib.parse
+
+                try:
+                    decoded_body = body.decode("utf-8")
+                except UnicodeDecodeError:
+                    decoded_body = ""
+                parsed = urllib.parse.parse_qs(decoded_body)
+                if "payload" in parsed:
+                    log.warning("slack.webhook_blocked_unsigned_form")
+                    return Response(
+                        "Slack signing secret required for interactive payloads",
+                        status_code=401,
+                    )
             log.warning("slack.webhook_no_signing_secret")
 
         content_type = request.headers.get("content-type", "")
@@ -800,9 +815,88 @@ class SlackChannel:
         act, approval_id = value.split(":", 1)
         approved = act == "approve"
 
+        user_id = payload.get("user", {}).get("id", "unknown")
+        channel_id = payload.get("channel", {}).get("id", "unknown")
+        team_id = payload.get("team", {}).get("id")
+
+        # 1. Admission Check
+        from agentos.channels._util import evaluate_policy
+
+        is_group = not channel_id.startswith("D")
+        decision = evaluate_policy(
+            self.policy,
+            is_group=is_group,
+            mentioned=True,
+            sender_id=user_id,
+        )
+        if not decision.admit:
+            log.warning(
+                "slack.interactive_unauthorized_click",
+                user_id=user_id,
+                channel_id=channel_id,
+            )
+            return
+
         from agentos.gateway.approval_queue import get_approval_queue
 
-        get_approval_queue().resolve(approval_id, approved)
+        queue = get_approval_queue()
+
+        # 2. Retrieve PendingApproval and verify sessionKey match
+        try:
+            entry = queue.get(approval_id)
+        except KeyError:
+            response_url = payload.get("response_url")
+            if response_url:
+                try:
+                    async with httpx.AsyncClient() as client:
+                        await client.post(
+                            response_url,
+                            json={
+                                "text": "Error: Approval request not found or expired.",
+                                "response_type": "ephemeral",
+                            },
+                        )
+                except Exception as exc:
+                    log.warning("slack.interactive_keyerror_post_failed", error=str(exc))
+            return
+
+        session_key = entry.params.get("sessionKey")
+        if isinstance(session_key, str) and session_key:
+            parts = session_key.split(":")
+            if parts and parts[0] == "subagent":
+                parts = parts[1:]
+            if len(parts) >= 5:
+                session_channel = parts[2]
+                session_mode = parts[3]
+                session_peer = parts[4]
+                expected_peer = channel_id if session_mode in ("group", "channel") else user_id
+                if session_channel != self.channel_id or session_peer != expected_peer:
+                    log.warning(
+                        "slack.interactive_mismatch",
+                        session_key=session_key,
+                        expected_peer=expected_peer,
+                        session_peer=session_peer,
+                    )
+                    return
+
+        # 3. Resolve Approval Queue
+        try:
+            queue.resolve(approval_id, approved)
+        except ValueError:
+            response_url = payload.get("response_url")
+            if response_url:
+                try:
+                    async with httpx.AsyncClient() as client:
+                        await client.post(
+                            response_url,
+                            json={
+                                "text": "Error: Approval request was already resolved.",
+                                "response_type": "ephemeral",
+                            },
+                        )
+                except Exception as exc:
+                    log.warning("slack.interactive_valueerror_post_failed", error=str(exc))
+            return
 
         response_url = payload.get("response_url")
         orig_message = payload.get("message", {})
@@ -836,10 +930,6 @@ class SlackChannel:
                     )
             except Exception as exc:
                 log.warning("slack.interactive_response_post_failed", error=str(exc))
-
-        user_id = payload.get("user", {}).get("id", "unknown")
-        channel_id = payload.get("channel", {}).get("id", "unknown")
-        team_id = payload.get("team", {}).get("id")
 
         msg = self.parse_event(
             {

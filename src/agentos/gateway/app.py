@@ -187,6 +187,24 @@ def create_gateway_app(
                     provider_name = getattr(p, "name", None) or type(p).__name__
                 except Exception:
                     pass
+        # Operator-visible failover health: an open breaker explains why turns
+        # are running on a fallback provider rather than the configured one.
+        breakers: list[dict[str, Any]] = []
+        active_breaker: dict[str, Any] | None = None
+        if provider_selector is not None:
+            try:
+                from agentos.provider.circuit_breaker import snapshot_payload
+
+                breakers = snapshot_payload(
+                    getattr(provider_selector, "circuit_breaker", None)
+                )
+                if provider_name:
+                    active_breaker = next(
+                        (row for row in breakers if row.get("provider") == provider_name),
+                        None,
+                    )
+            except Exception:  # noqa: BLE001 - diagnostic surface only
+                breakers = []
         return JSONResponse(
             {
                 "version": __version__,
@@ -194,6 +212,8 @@ def create_gateway_app(
                 "status": "running",
                 "provider": provider_name,
                 "auth_mode": config.auth.mode,
+                "circuitBreaker": active_breaker,
+                "circuitBreakers": breakers,
             }
         )
 
@@ -217,10 +237,7 @@ def create_gateway_app(
         auth_header = request.headers.get("authorization", "")
         if auth_header.startswith("Bearer "):
             return auth_header[7:]
-        token_header = request.headers.get("x-agentos-token")
-        if token_header:
-            return token_header
-        return request.query_params.get("token")
+        return request.headers.get("x-agentos-token")
 
     def _make_ctx(request: Request | None = None) -> RpcContext:
         from agentos.gateway.auth import denied_access, resolve_auth
@@ -544,7 +561,7 @@ def create_gateway_app(
     # ── Middleware ───────────────────────────────────────────────────────────
 
     middleware = [
-        Middleware(ErrorHandlingMiddleware),
+        Middleware(ErrorHandlingMiddleware, debug=config.debug),
         # DNS-rebinding guard: reject foreign Host headers on a loopback bind
         # (no-op ["*"] on a public bind, which is already auth-gated).
         Middleware(LoopbackHostMiddleware, allowed_hosts=resolve_trusted_hosts(config)),

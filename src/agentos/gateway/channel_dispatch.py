@@ -1778,6 +1778,61 @@ def _pending_approval_payload(content: Any) -> dict[str, Any] | None:
     return payload
 
 
+def _channel_kind(channel: Any) -> str:
+    """Resolve the platform an adapter speaks for, e.g. ``telegram``.
+
+    ``transport_name`` is NOT it: on the real adapters it is a property whose
+    value is the wire transport (``polling``/``webhook``/``websocket``), and
+    Discord does not expose it at all. The platform lives on the capability
+    profile; the class name is the fallback for duck-typed adapters.
+    """
+    profile = getattr(channel, "capability_profile", None)
+    channel_type = getattr(profile, "channel_type", None)
+    if isinstance(channel_type, str) and channel_type:
+        return channel_type.lower()
+    return type(channel).__name__.removesuffix("Channel").lower()
+
+
+def _channel_approval_prompt_text(pending: dict[str, Any]) -> str:
+    command = pending.get("command") or ""
+    tool_name = pending.get("tool_name") or "tool"
+    return f"⚠️ Tool '{tool_name}' requires human approval:\n\n`{command}`"
+
+
+async def _deliver_channel_approval_prompt(
+    channel: Any, inbound: IncomingMessage, pending: dict[str, Any]
+) -> None:
+    """Send the approval prompt, degrading to plain text if rendering fails.
+
+    The turn loops around this call only catch ``TimeoutError``, so anything
+    raised while building the platform's interactive payload would unwind the
+    whole turn and leave the user with silence.
+    """
+    try:
+        await _send_channel_approval_prompt(channel, inbound, pending)
+        return
+    except Exception as exc:  # noqa: BLE001 - a dead prompt must not kill the turn
+        log.warning(
+            "channel_dispatch.approval_prompt_failed",
+            channel_type=type(channel).__name__,
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+    try:
+        await channel.send(
+            OutgoingMessage(
+                content=_channel_approval_prompt_text(pending),
+                reply_to=inbound.channel_id,
+                metadata={"channel": inbound.channel_id},
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - nothing left to fall back to
+        log.warning(
+            "channel_dispatch.approval_prompt_fallback_failed",
+            channel_type=type(channel).__name__,
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
 async def _send_channel_approval_prompt(
     channel: Any, inbound: IncomingMessage, pending: dict[str, Any]
 ) -> None:
@@ -1785,7 +1840,7 @@ async def _send_channel_approval_prompt(
     command = pending.get("command") or ""
     tool_name = pending.get("tool_name") or "tool"
 
-    text = f"⚠️ Tool '{tool_name}' requires human approval:\n\n`{command}`"
+    text = _channel_approval_prompt_text(pending)
 
     metadata: dict[str, Any] = {"channel": inbound.channel_id}
     if hasattr(channel, "_reply_thread_ts"):
@@ -1793,11 +1848,9 @@ async def _send_channel_approval_prompt(
         if thread_ts:
             metadata["thread_ts"] = thread_ts
 
-    transport = getattr(channel, "transport_name", lambda: "")()
-    if callable(transport):
-        transport = transport()
+    kind = _channel_kind(channel)
 
-    if transport == "telegram":
+    if kind == "telegram":
         metadata["reply_markup"] = {
             "inline_keyboard": [
                 [
@@ -1806,7 +1859,7 @@ async def _send_channel_approval_prompt(
                 ]
             ]
         }
-    elif transport == "slack":
+    elif kind == "slack":
         metadata["blocks"] = [
             {
                 "type": "section",
@@ -1836,7 +1889,7 @@ async def _send_channel_approval_prompt(
                 ],
             },
         ]
-    elif transport == "discord":
+    elif kind == "discord":
         metadata["components"] = [
             {
                 "type": 1,
@@ -2462,7 +2515,7 @@ async def _run_turn_batch_path(
                     )
                 pending_approval = _pending_approval_payload(event.result)
                 if pending_approval is not None:
-                    await _send_channel_approval_prompt(channel, msg, pending_approval)
+                    await _deliver_channel_approval_prompt(channel, msg, pending_approval)
                 else:
                     ask_text = _ask_user_reply_text(event)
                     if ask_text:
@@ -2637,7 +2690,7 @@ async def _run_turn_streaming_path(
                     )
                 pending_approval = _pending_approval_payload(event.result)
                 if pending_approval is not None:
-                    await _send_channel_approval_prompt(channel, msg, pending_approval)
+                    await _deliver_channel_approval_prompt(channel, msg, pending_approval)
                 else:
                     ask_text = _ask_user_reply_text(event)
                     if ask_text:

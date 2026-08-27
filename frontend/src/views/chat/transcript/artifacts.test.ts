@@ -283,29 +283,18 @@ describe('createArtifactRenderer chart artifacts', () => {
     )
   })
 
-  it('keeps the download on the anchor, which the click handler steps aside for', () => {
+  it('renders a download button rather than a raw-json anchor', () => {
     const { deps } = chartRendererDeps()
 
     const container = document.createElement('div')
     container.innerHTML = createArtifactRenderer(deps).renderArtifacts([CHART_ARTIFACT])
 
-    const link = container.querySelector<HTMLElement>('.msg-artifact-chart__download')
-    // Resolving to itself and being an anchor is exactly what makes the
-    // delegated handler leave it to the browser's native download.
-    expect(link?.closest('[data-artifact-download]')).toBe(link)
-    expect(link?.tagName).toBe('A')
-  })
-
-  it('still offers the raw payload as a download', () => {
-    const { deps } = chartRendererDeps()
-
-    const container = document.createElement('div')
-    container.innerHTML = createArtifactRenderer(deps).renderArtifacts([CHART_ARTIFACT])
-
-    expect(container.querySelector('.msg-artifact-chart__download')).toHaveAttribute(
-      'download',
-      'bonk.chart.json',
-    )
+    const button = container.querySelector<HTMLElement>('.msg-artifact-chart__download')
+    expect(button?.tagName).toBe('BUTTON')
+    expect(button?.getAttribute('type')).toBe('button')
+    // No data-artifact-download, so the delegated handler does not fetch JSON.
+    expect(button?.hasAttribute('data-artifact-download')).toBe(false)
+    expect(button?.textContent).toBe('Download')
   })
 
   it('hands a streamed chart artifact to the mounter as soon as it lands', () => {

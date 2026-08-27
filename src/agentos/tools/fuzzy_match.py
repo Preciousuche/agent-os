@@ -73,6 +73,17 @@ _BLOCK_ANCHOR_MIN_LINES = 3
 # percent against any pattern, and offering those as a hint misleads the model.
 _HINT_MIN_SIMILARITY = 0.40
 
+# ``block_anchor``, ``context_similarity`` and the failed-match hint all slide
+# the pattern's window down the whole file and score each position with
+# ``SequenceMatcher``, so their cost scales with lines × pattern lines. Past
+# this many cells the sweep is measured in tens of seconds — a 12,500-line file
+# against a 200-line pattern takes over a minute — and a model that gets a
+# prompt "not found" is better served than one that waits for a guess. The
+# bound still leaves every edit shape we actually see intact: a 2,000-line file
+# with a 50-line pattern, a 5,000-line file with a 20-line pattern, a
+# 10,000-line file with a 10-line pattern.
+_MAX_SWEEP_CELLS = 100_000
+
 _ESCAPE_SEQUENCES = (
     ("\\r\\n", "\n"),
     ("\\n", "\n"),
@@ -325,6 +336,12 @@ def _similarity(left: str, right: str) -> float:
     return SequenceMatcher(None, left, right).ratio()
 
 
+def _sweep_too_large(line_count: int, window: int) -> bool:
+    """True when a full similarity sweep over this input is not worth its cost."""
+
+    return line_count * window > _MAX_SWEEP_CELLS
+
+
 # ---------------------------------------------------------------------------
 # strategies
 # ---------------------------------------------------------------------------
@@ -391,7 +408,7 @@ def _strategy_block_anchor(content: str, pattern: str) -> list[tuple[int, int]]:
 
     lines, starts, ends = _content_lines(content)
     window = len(pattern_lines)
-    if window > len(lines):
+    if window > len(lines) or _sweep_too_large(len(lines), window):
         return []
 
     middle = "\n".join(line.strip() for line in pattern_lines[1:-1])
@@ -431,7 +448,7 @@ def _strategy_context_similarity(content: str, pattern: str) -> list[tuple[int, 
 
     lines, starts, ends = _content_lines(content)
     window = len(pattern_lines)
-    if window > len(lines):
+    if window > len(lines) or _sweep_too_large(len(lines), window):
         return []
 
     best_score = 0.0
@@ -549,6 +566,9 @@ def find_closest_lines(content: str, old_text: str, *, max_results: int = 3) -> 
     lines, _, _ = _content_lines(content)
     window = min(len(pattern_lines), len(lines))
     if window == 0 or not normalized_pattern.strip():
+        return ""
+    if _sweep_too_large(len(lines), window):
+        # No hint beats making a failed edit wait a minute for one.
         return ""
 
     scored: list[tuple[float, int]] = []

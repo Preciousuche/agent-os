@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import fnmatch
+import functools
 import json
 import os
 import posixpath
@@ -16,6 +17,7 @@ from xml.etree import ElementTree as ET
 import structlog
 
 from agentos.identity.workspace import BOOTSTRAP_FILENAMES
+from agentos.redact import redact_file_output
 from agentos.sandbox.integration import get_runtime, sandboxed
 from agentos.tools.fuzzy_match import (
     AmbiguousMatchError,
@@ -514,7 +516,9 @@ async def read_file(path: str, offset: int | None = None, limit: int | None = No
 
     return await loop.run_in_executor(
         None,
-        lambda: _stream_numbered_lines_from_file(p, path, offset=offset, limit=limit),
+        lambda: redact_file_output(
+            _stream_numbered_lines_from_file(p, path, offset=offset, limit=limit), path=p
+        ),
     )
 
 
@@ -574,7 +578,13 @@ async def read_spreadsheet(
         )
 
     selected = _select_spreadsheet_sheets(sheets, sheet)
-    return _format_spreadsheet(path=p, sheets=selected, offset=row_offset, limit=row_limit)
+    return await loop.run_in_executor(
+        None,
+        lambda: redact_file_output(
+            _format_spreadsheet(path=p, sheets=selected, offset=row_offset, limit=row_limit),
+            path=p,
+        ),
+    )
 
 
 def _read_delimited_rows(path: Path, delimiter: str) -> list[tuple[str, list[list[str]]]]:
@@ -800,7 +810,10 @@ def _locate_edit(original: str, old_text: str, new_text: str, *, path: str) -> F
             " be more specific"
         ) from exc
     except FuzzyMatchError as exc:
-        detail = f" Closest match: {exc.hint}" if exc.hint else ""
+        # The hint quotes real file lines back at the model, so it is a file-read
+        # channel like any other and gets the same mask.
+        hint = redact_file_output(exc.hint, path=path) if exc.hint else ""
+        detail = f" Closest match: {hint}" if hint else ""
         raise ValueError(f"old_text not found in {path}.{detail}") from exc
 
 
@@ -840,7 +853,13 @@ async def edit_file(
     loop = asyncio.get_event_loop()
     original = await loop.run_in_executor(None, p.read_text, "utf-8")
 
-    match = _locate_edit(original, old_text, new_text, path=path)
+    # The matcher is the CPU-bound part of an edit, not the read or the write:
+    # a miss on a large file sweeps every window in it. Run it in the same
+    # executor so a slow match costs a worker thread, never the event loop.
+    match = await loop.run_in_executor(
+        None,
+        functools.partial(_locate_edit, original, old_text, new_text, path=path),
+    )
     updated = match.updated
 
     def _write() -> None:
@@ -1001,7 +1020,8 @@ async def grep_search(
                 text = fp.read_text(encoding="utf-8", errors="replace")
                 for lineno, line in enumerate(text.splitlines(), 1):
                     if regex.search(line):
-                        results.append(f"{fp}:{lineno}: {line.rstrip()}")
+                        shown = redact_file_output(line.rstrip(), path=fp)
+                        results.append(f"{fp}:{lineno}: {shown}")
                         if len(results) >= max_results:
                             return
             except (PermissionError, OSError):

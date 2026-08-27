@@ -23,7 +23,6 @@ let mockBootstrap: Bootstrap = {
   ws_url: 'ws://localhost/ws',
   auth_mode: '',
   base_path: '/control',
-  config_path: '',
   features: { diagnostics: false },
 }
 

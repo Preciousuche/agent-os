@@ -32,6 +32,7 @@ from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
+from starlette.types import Message, Receive
 
 from agentos.contracts.attachments import (
     ALLOWED_MEDIA_TYPES,
@@ -47,6 +48,12 @@ _ALLOWED_MIMES: frozenset[str] = ALLOWED_MEDIA_TYPES
 
 _DEFAULT_MAX_FILE_BYTES = 30 * 1024 * 1024
 _DEFAULT_TTL_SECONDS = 10 * 60
+
+# Multipart framing (boundaries, part headers, sibling text fields) inflates
+# the request body past the file bytes themselves. Allow for it so a body that
+# is exactly at the cap is not refused on its Content-Length alone, while an
+# obviously abusive body still never reaches the parser.
+_MULTIPART_FRAMING_ALLOWANCE = 64 * 1024
 
 
 class UploadStoreError(Exception):
@@ -70,6 +77,56 @@ class AttachmentLostInRestartError(UploadStoreError):
 
     Concrete UX hook for "uploaded file lost in restart".
     """
+
+
+class RequestBodyTooLargeError(Exception):
+    """The request body exceeded the byte budget granted to its endpoint."""
+
+
+# ---------------------------------------------------------------------------
+# Request-size guards, shared with the audio transcription route.
+# ---------------------------------------------------------------------------
+
+
+def declared_content_length(request: Request) -> int | None:
+    """Return the declared body size, or ``None`` when absent or unparseable.
+
+    A missing or malformed header means "unknown", never zero: chunked and
+    lying clients must fall through to the streaming guard below.
+    """
+
+    raw = request.headers.get("content-length")
+    if raw is None:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value >= 0 else None
+
+
+def bounded_request(request: Request, limit: int) -> Request:
+    """Return a view of ``request`` whose body stream stops after ``limit``.
+
+    Starlette's ``max_part_size`` only guards non-file parts -- a file part
+    streams unbounded into a ``SpooledTemporaryFile`` before the handler runs
+    (``MultiPartParser.on_part_data`` skips the check when the part has a
+    file). Raising out of ``receive`` aborts the parse while the body is still
+    arriving, so an abusive upload never lands on disk in full either.
+    """
+
+    remaining = limit
+
+    async def receive() -> Message:
+        nonlocal remaining
+        message = await request.receive()
+        if message.get("type") == "http.request":
+            remaining -= len(message.get("body", b""))
+            if remaining < 0:
+                raise RequestBodyTooLargeError(f"request body exceeds {limit} bytes")
+        return message
+
+    return Request(request.scope, cast(Receive, receive))
 
 
 @dataclass
@@ -278,17 +335,25 @@ class UploadStore:
 def _extract_authorization_token(request: Request) -> str | None:
     """Header-only token extraction.
 
-    The multipart upload endpoint deliberately rejects query-string token auth
-    (which the existing JSON-RPC routes accept for legacy convenience). A
-    cross-origin attacker can craft a multipart POST with a forged ``?token=…``
-    query but cannot set arbitrary headers on a plain ``<form>`` submission, so
-    requiring the ``Authorization`` header closes that surface.
+    Like all gateway endpoints, the multipart upload endpoint requires
+    header-based token auth (``Authorization: Bearer <token>`` or
+    ``x-agentos-token: <token>``) and rejects query-string tokens.
     """
 
     auth_header = request.headers.get("authorization", "")
     if auth_header.startswith("Bearer "):
         return auth_header[7:]
     return request.headers.get("x-agentos-token")
+
+
+def _too_large(max_bytes: int, *, mime: str | None = None) -> JSONResponse:
+    """Build the shared 413 body used by every upload size guard."""
+
+    suffix = f" for {mime}" if mime else ""
+    return JSONResponse(
+        {"error": f"upload exceeds {max_bytes} byte cap{suffix}", "code": "TOO_LARGE"},
+        status_code=413,
+    )
 
 
 def register_upload_routes(
@@ -313,8 +378,18 @@ def register_upload_routes(
                     status_code=401,
                 )
 
+        # The per-mime cap is only known once the part headers are parsed, so
+        # bound the body by the store's absolute ceiling first and tighten it
+        # below. Without this the whole body spools to disk before any check.
+        stream_budget = store.max_file_bytes + _MULTIPART_FRAMING_ALLOWANCE
+        declared = declared_content_length(request)
+        if declared is not None and declared > stream_budget:
+            return _too_large(store.max_file_bytes)
+
         try:
-            form = await request.form()
+            form = await bounded_request(request, stream_budget).form()
+        except RequestBodyTooLargeError:
+            return _too_large(store.max_file_bytes)
         except Exception as exc:
             return JSONResponse(
                 {"error": f"multipart/form-data required: {exc}"}, status_code=400
@@ -338,11 +413,19 @@ def register_upload_routes(
                 {"error": "missing or invalid 'mime' / content-type"}, status_code=400
             )
 
-        payload = await upload.read()
+        # Read one byte past the cap: enough to detect an oversize part, never
+        # enough to materialise it. ``store.put`` re-checks as defence in depth.
+        cap = min(
+            store.max_file_bytes,
+            attachment_size_limit_for_mime(normalized_mime, staged=True),
+        )
+        payload = await upload.read(cap + 1)
         if not isinstance(payload, bytes) or len(payload) == 0:
             return JSONResponse(
                 {"error": "empty upload"}, status_code=400
             )
+        if len(payload) > cap:
+            return _too_large(cap, mime=normalized_mime)
 
         try:
             file_uuid = await store.put(filename, normalized_mime, payload)

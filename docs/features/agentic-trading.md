@@ -116,13 +116,15 @@ while a look-alike dropped on disk does not — see
 | Skill | Publisher | What it does |
 | --- | --- | --- |
 | `bankr` | Bankr | Natural-language crypto trading, tokenized stocks and ETFs (spot or leveraged), portfolio balances with P&L, transfers, token deploys, and automated trading across Base, Ethereum, Polygon, Solana, Unichain, Arbitrum, BNB Chain, and Robinhood Chain. Also fronts the Bankr LLM gateway. |
+| `aero-stock-lp` | Bankr | Range-LP Coinbase tokenized equities (NVDA, AAPL, GOOGL, META) and AERO/USDC on Aerodrome Slipstream (Base): open, recenter, and exit concentrated-liquidity positions, check pool status, NAV, and yields, and get a portfolio pass with P&L and projected APR. Routes each position to the higher-yielding side — staked for AERO emissions vs unstaked for trading fees — at entry and on every manage pass. Writes go through the Bankr arbitrary-transaction flow. |
 | `capminal` | Capminal | Cap Wallet operations: deploy tokens via Clanker, Liquid, or Virtuals, claim rewards, manage limit, stop-loss, TWAP, and DCA orders, bridge between Base and Robinhood Chain, and discover x402 APIs. |
 
 Each publisher carries further skills in the same catalog; browse the Community
 tab to see the current list.
 
-`bankr` needs the `@bankr/cli` install and a Bankr login; `capminal` needs
-`CAP_API_KEY`. Both authorize spending — treat them as credentials and read
+`bankr` needs the `@bankr/cli` install and a Bankr login; `aero-stock-lp` runs
+on top of that same Bankr wallet, funded with USDC on Base; `capminal` needs
+`CAP_API_KEY`. All three authorize spending — treat them as credentials and read
 [`skills.md`](skills.md) for how requirements are surfaced before an install.
 
 ## Local by default

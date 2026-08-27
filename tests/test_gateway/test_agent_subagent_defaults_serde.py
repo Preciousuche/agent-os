@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from agentos.gateway.config import (
     AgentDefaults,
     AgentEntryConfig,
@@ -51,7 +53,6 @@ def test_gateway_config_exposes_agents_defaults_and_subagents_subtree() -> None:
     assert isinstance(cfg.subagents, SubagentsGatewayConfig)
     assert cfg.subagents.enforce_disabled_agents is False
     assert cfg.subagents.subagent_reserved_slots == 2
-    assert cfg.subagents.archive_after_minutes == 60
 
 
 def test_gateway_config_accepts_explicit_subagent_defaults() -> None:
@@ -60,11 +61,39 @@ def test_gateway_config_accepts_explicit_subagent_defaults() -> None:
         subagents=SubagentsGatewayConfig(
             enforce_disabled_agents=True,
             subagent_reserved_slots=4,
-            archive_after_minutes=0,
         ),
     )
     assert cfg.agents_defaults.subagents is not None
     assert cfg.agents_defaults.subagents.model == "haiku"
     assert cfg.subagents.enforce_disabled_agents is True
     assert cfg.subagents.subagent_reserved_slots == 4
-    assert cfg.subagents.archive_after_minutes == 0
+
+
+def test_legacy_subagents_config_with_archive_after_minutes_still_loads(
+    tmp_path: Path,
+) -> None:
+    """SubagentsGatewayConfig does not set extra='forbid', but the migration
+    should still strip the dead key and rewrite the file with a backup."""
+    config_path = tmp_path / "agentos.toml"
+    config_path.write_text(
+        "[subagents]\narchive_after_minutes = 60\nenforce_disabled_agents = true\n",
+        encoding="utf-8",
+    )
+
+    cfg = GatewayConfig.load(config_path)
+
+    assert cfg.subagents.enforce_disabled_agents is True
+    assert not hasattr(cfg.subagents, "archive_after_minutes")
+    backups = sorted(tmp_path.glob("agentos.toml.backup.*"))
+    assert backups
+    backup_text = backups[-1].read_text(encoding="utf-8")
+    assert "archive_after_minutes" in backup_text
+    text = config_path.read_text(encoding="utf-8")
+    assert "archive_after_minutes" not in text
+    assert "enforce_disabled_agents" in text
+
+
+def test_the_dropped_archive_key_is_reported_not_silently_eaten():
+    from agentos.gateway.config_migration import DEPRECATED_SUBAGENTS_FIELDS
+
+    assert "subagents.archive_after_minutes" in DEPRECATED_SUBAGENTS_FIELDS

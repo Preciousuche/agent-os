@@ -5,7 +5,6 @@ export interface Bootstrap {
   ws_url: string
   auth_mode: string
   base_path: string
-  config_path: string
   features: { diagnostics: boolean }
 }
 
@@ -68,7 +67,6 @@ export function fallbackBootstrap(): Bootstrap {
     ws_url: defaultWsUrl(),
     auth_mode: '',
     base_path: controlBasePath(),
-    config_path: '',
     features: { diagnostics: false },
   }
 }

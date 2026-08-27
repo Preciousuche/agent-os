@@ -503,6 +503,15 @@ class DiscordChannel:
         return True
 
     async def _handle_discord_component_interaction(self, data: dict[str, Any]) -> None:
+    async def _handle_discord_component_interaction(self, data: dict[str, Any]) -> None:
+        interaction_id = str(data.get("id") or "")
+        if interaction_id and not self._dedupe.check_and_add(f"interaction:{interaction_id}"):
+            log.debug(
+                "discord.component_interaction_duplicate_dropped",
+                interaction_id=interaction_id,
+            )
+            return
+
         interaction_data = data.get("data", {})
         custom_id = interaction_data.get("custom_id", "")
         if not custom_id.startswith("approve:") and not custom_id.startswith("deny:"):
@@ -511,12 +520,109 @@ class DiscordChannel:
         act, approval_id = custom_id.split(":", 1)
         approved = act == "approve"
 
+        member = data.get("member")
+        member_user = member.get("user") if isinstance(member, dict) else None
+        direct_user = data.get("user")
+        user = member_user if isinstance(member_user, dict) else direct_user
+        user_id = str(user.get("id") if isinstance(user, dict) else "unknown")
+        channel_id = str(data.get("channel_id") or "unknown")
+        guild_id = data.get("guild_id")
+        is_group = guild_id is not None
+
+        # 1. Admission Check
+        from agentos.channels._util import evaluate_policy
+
+        decision = evaluate_policy(
+            self.policy,
+            is_group=is_group,
+            mentioned=True,
+            sender_id=user_id,
+        )
+        interaction_token = data.get("token")
+        if not decision.admit:
+            client = self._get_client()
+            try:
+                resp = await client.post(
+                    f"/interactions/{interaction_id}/{interaction_token}/callback",
+                    json={
+                        "type": 4,  # CHANNEL_MESSAGE_WITH_SOURCE
+                        "data": {
+                            "content": "Unauthorized: Only paired users can approve/deny tools.",
+                            "flags": 64,  # EPHEMERAL
+                        },
+                    },
+                )
+                resp.raise_for_status()
+            except Exception as exc:
+                log.warning("discord.component_unauthorized_response_failed", error=str(exc))
+            return
+
         from agentos.gateway.approval_queue import get_approval_queue
 
-        get_approval_queue().resolve(approval_id, approved)
+        queue = get_approval_queue()
 
-        interaction_id = data.get("id")
-        interaction_token = data.get("token")
+        # 2. Retrieve PendingApproval and verify sessionKey match
+        try:
+            entry = queue.get(approval_id)
+        except KeyError:
+            client = self._get_client()
+            try:
+                resp = await client.post(
+                    f"/interactions/{interaction_id}/{interaction_token}/callback",
+                    json={
+                        "type": 4,  # CHANNEL_MESSAGE_WITH_SOURCE
+                        "data": {
+                            "content": "Error: Approval request not found or expired.",
+                            "flags": 64,  # EPHEMERAL
+                        },
+                    },
+                )
+                resp.raise_for_status()
+            except Exception as exc:
+                log.warning("discord.component_keyerror_response_failed", error=str(exc))
+            return
+
+        session_key = entry.params.get("sessionKey")
+        if isinstance(session_key, str) and session_key:
+            parts = session_key.split(":")
+            if parts and parts[0] == "subagent":
+                parts = parts[1:]
+            if len(parts) >= 5:
+                session_channel = parts[2]
+                session_mode = parts[3]
+                session_peer = parts[4]
+                expected_peer = channel_id if session_mode in ("group", "channel") else user_id
+                if session_channel != "discord" or session_peer != expected_peer:
+                    log.warning(
+                        "discord.component_mismatch",
+                        session_key=session_key,
+                        expected_peer=expected_peer,
+                        session_peer=session_peer,
+                    )
+                    return
+
+        # 3. Resolve Approval Queue
+        try:
+            queue.resolve(approval_id, approved)
+        except ValueError:
+            client = self._get_client()
+            try:
+                resp = await client.post(
+                    f"/interactions/{interaction_id}/{interaction_token}/callback",
+                    json={
+                        "type": 4,  # CHANNEL_MESSAGE_WITH_SOURCE
+                        "data": {
+                            "content": "Error: Approval request was already resolved.",
+                            "flags": 64,  # EPHEMERAL
+                        },
+                    },
+                )
+                resp.raise_for_status()
+            except Exception as exc:
+                log.warning("discord.component_valueerror_response_failed", error=str(exc))
+            return
+
+        # 4. Respond with UPDATE_MESSAGE
         orig_message = data.get("message", {})
         orig_content = orig_message.get("content", "")
         decision_text = "Approved ✅" if approved else "Denied ❌"
@@ -538,13 +644,7 @@ class DiscordChannel:
         except Exception as exc:
             log.warning("discord.component_response_failed", error=str(exc))
 
-        member = data.get("member")
-        member_user = member.get("user") if isinstance(member, dict) else None
-        direct_user = data.get("user")
-        user = member_user if isinstance(member_user, dict) else direct_user
-        user_id = str(user.get("id") if isinstance(user, dict) else "unknown")
-        channel_id = str(data.get("channel_id") or "unknown")
-
+        # 5. Enqueue the virtual message
         msg = IncomingMessage(
             sender_id=user_id,
             channel_id=channel_id,
@@ -552,7 +652,7 @@ class DiscordChannel:
             metadata={
                 "interaction_type": "component_click",
                 "guild_id": data.get("guild_id"),
-                "is_group": False,
+                "is_group": is_group,
             },
         )
         self.enqueue(msg)

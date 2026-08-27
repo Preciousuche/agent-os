@@ -110,6 +110,27 @@ headers, JWTs, private keys and DSN passwords are masked. Set
 `AGENTOS_REDACT_SECRETS=0` before starting AgentOS to turn this off; it is read
 once at startup, so a command the agent runs cannot switch it off mid-session.
 
+File content is scanned the same way: `read_file`, `read_spreadsheet`,
+`grep_search` and `edit_file`'s closest-match hint mask credentials on their way
+back to the model, using a `«redacted:sk-…»` sentinel that cannot be mistaken
+for a usable key and written back over the real one. This layer stays on even
+under `/elevated full`, where the sensitive-path denylist is lifted, so an
+elevated read of a secrets file does not put the secrets verbatim into the
+persisted transcript. Reading one through the shell (`cat ~/.aws/credentials`)
+gets the same treatment.
+
+How hard the pass looks depends on the file. Credentials recognisable from their
+own text — vendor-prefixed keys, JWTs, PEM private keys — are masked in every
+file, source code included. The name-driven pass (`NAME=value`, `"name": value`,
+`Authorization:` headers, DSN and URL passwords) is the only one that catches a
+shapeless secret such as `aws_secret_access_key`, and it runs everywhere
+**except** source code, where `api_key=self._api_key` is an identifier and
+`apiKey: NotRequired[str]` a type: masking those would hand back code that no
+longer matches the file. Configuration data — `.env`, `~/.aws/credentials`,
+`~/.kube/config`, `.netrc`, `.ini`, JSON and YAML — gets the full pass.
+`grep_search` judges each matched line by the path it came from, so one search
+can span both kinds of file.
+
 ### What the outbound guard refuses
 
 `http_request`, `exec_command` and `execute_code` refuse to put credential
@@ -401,6 +422,27 @@ For a remote or non-default host, set `base_url` under `[llm]` (e.g.
 to the provider and no tool handler is exposed for the turn. When you do enable
 tools on smaller local models, keep a positive `agent_max_iterations` so
 malformed or repetitive tool calls terminate predictably.
+
+## Prompt Cache Configuration
+
+Controls prompt prefix caching for LLM providers that support it (Anthropic, OpenAI, DeepSeek, OpenRouter, etc.):
+
+```toml
+[prompt_cache]
+mode = "auto"   # "auto" | "on" | "off"
+```
+
+- `auto` (default): Enables prompt caching when the active provider and model support prefix caching.
+- `on`: Forces prompt caching on.
+- `off`: Disables prompt caching.
+
+Environment variable override:
+```sh
+export AGENTOS_CACHE_MODE="auto"   # auto | on | off
+```
+
+> [!NOTE]
+> The legacy `prompt_cache.enabled` key and `AGENTOS_CACHE_ENABLED` environment variable are deprecated and mapped automatically to `mode` (`on`/`off`) with a deprecation warning.
 
 ## Router Configuration
 
@@ -793,6 +835,24 @@ agentos agent \
 ```
 
 Read: [`tools-and-sandbox.md`](tools-and-sandbox.md)
+
+## Safety Configuration
+
+Controls prompt-ingress safety scanning and untrusted workspace containment:
+
+```toml
+[safety]
+wrap_untrusted_workspace = true
+injection_scan_mode = "report"   # "report" | "enforce" | "off"
+```
+
+- `wrap_untrusted_workspace` (default `true`): Wraps files read from untrusted workspace directories with safety bounding markers to mitigate prompt-injection framing in workspace files.
+- `injection_scan_mode` (applied to bootstrap workspace files, not all ingress):
+  - `report` (default): Scans those files and logs detected patterns without changing the content; the turn still runs.
+  - `enforce`: Redacts matched content from untrusted workspace files before it reaches the prompt; the turn still runs.
+  - `off`: Disables prompt-injection scanning.
+
+`[safety]` is TOML-only; there is no environment-variable override for these keys.
 
 ## Gateway Binding
 

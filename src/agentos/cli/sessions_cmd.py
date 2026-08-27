@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -13,10 +12,9 @@ import typer
 from rich.table import Table
 
 from agentos.cli.chat.session_state import messages_to_markdown
-from agentos.cli.gateway_rpc import run_gateway_sync
+from agentos.cli.gateway_rpc import default_gateway_token, default_gateway_url, run_gateway_sync
 from agentos.cli.output import print_json
 from agentos.cli.ui import ACCENT, ACCENT_HEADER, console, error_panel, markup_escape
-from agentos.cli.url_utils import normalize_gateway_url
 
 app = typer.Typer(help="Manage chat sessions.")
 
@@ -135,9 +133,7 @@ async def _with_client(action):
 
     client = GatewayClient()
     try:
-        await client.connect(
-            normalize_gateway_url(os.environ.get("AGENTOS_GATEWAY_URL", "ws://localhost:18791/ws"))
-        )
+        await client.connect(default_gateway_url(), token=default_gateway_token())
         return await action(client)
     except SystemExit as exc:
         console.print(f"[dim]{exc}[/dim]")

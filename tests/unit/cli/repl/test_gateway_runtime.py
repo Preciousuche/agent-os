@@ -72,7 +72,7 @@ async def test_gateway_runtime_dispatches_messages_slash_commands_and_exit(
             self.abort_calls: list[str] = []
             _FakeGatewayClient.instances.append(self)
 
-        async def connect(self) -> None:
+        async def connect(self, url: str, *, token: str | None = None) -> None:
             self.connected = True
 
         async def create_session(self, model: str | None = None) -> str:
@@ -220,7 +220,7 @@ async def test_gateway_abort_targets_active_turn_session_after_session_changes(
             self.abort_calls: list[str] = []
             _FakeGatewayClient.instances.append(self)
 
-        async def connect(self) -> None:
+        async def connect(self, url: str, *, token: str | None = None) -> None:
             return None
 
         async def create_session(self, model: str | None = None) -> str:
