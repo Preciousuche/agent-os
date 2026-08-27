@@ -26,7 +26,7 @@ _FIELD_RANGES = {
     "hour": (0, 23),
     "day_of_month": (1, 31),
     "month": (1, 12),
-    "day_of_week": (0, 6),  # 0=Sunday
+    "day_of_week": (0, 7),  # 0=Sunday, 7=Sunday too (POSIX permits 0 and 7)
 }
 
 _MONTH_NAMES = {
@@ -99,11 +99,14 @@ def _parse_field(token: str, field_name: str, names: dict[str, int] | None = Non
     for part in token.split(","):
         part = part.strip()
         if names:
-            # resolve names in ranges and steps too
+            # POSIX: month and day-of-week names are case-insensitive ("case
+            # doesn't matter"). Lowercase the token before substituting so
+            # Mon-Fri / JAN / jan all resolve; digits and the -, /, * ,
+            # separators are unaffected by lower().
+            part = part.lower()
             sub_parts = part.replace("/", "§").replace("-", "¶")
             for name, val in names.items():
-                sub_parts = sub_parts.replace(name.lower(), str(val))
-                sub_parts = sub_parts.replace(name.upper(), str(val))
+                sub_parts = sub_parts.replace(name, str(val))
             part = sub_parts.replace("§", "/").replace("¶", "-")
 
         if "/" in part:
@@ -121,6 +124,11 @@ def _parse_field(token: str, field_name: str, names: dict[str, int] | None = Non
                 start_str, end_str = range_part.split("-", 1)
                 start = _to_int(start_str, field_name, lo, hi)
                 end = _to_int(end_str, field_name, lo, hi)
+                # Same rule the plain-range branch applies. Without it a
+                # reversed range silently yields an empty step sequence, so the
+                # expression parses, stores, and then matches no instant at all.
+                if start > end:
+                    raise CronParseError(f"Range start > end in field '{field_name}'")
             else:
                 start = _to_int(range_part, field_name, lo, hi)
                 end = hi
@@ -140,6 +148,14 @@ def _parse_field(token: str, field_name: str, names: dict[str, int] | None = Non
 
         else:
             values.add(_to_int(part, field_name, lo, hi))
+
+    if field_name == "day_of_week" and 7 in values:
+        # POSIX: day-of-week may use either 0 or 7 to mean Sunday. Our matcher
+        # normalizes Python's Monday==0 to Sunday==0 via (weekday+1) % 7, so a
+        # literal 7 must collide onto 0 or a plain "0 0 * * 7" schedule would
+        # never fire (and "SAT-SUN" would be a dead range).
+        values.remove(7)
+        values.add(0)
 
     return CronField(frozenset(values))
 

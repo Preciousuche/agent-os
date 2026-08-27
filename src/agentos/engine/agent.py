@@ -11,7 +11,7 @@ import hashlib
 import json
 import time
 import uuid
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -668,6 +668,7 @@ class Agent:
         memory_sync_manager: Any | None = None,
         tool_registry: ToolRegistry | None = None,
         tool_context: ToolContext | None = None,
+        spend_budget_guard: Callable[[str], tuple[bool, str | None]] | None = None,
     ) -> None:
         self.provider = provider
         self.config = config or AgentConfig()
@@ -680,6 +681,11 @@ class Agent:
         self._turn_call_logger = turn_call_logger
         self._tool_registry: ToolRegistry | None = tool_registry
         self._tool_context: ToolContext | None = tool_context
+        # Cumulative spend ceilings, re-read between iterations. The turn-start
+        # gate alone would let one turn with an unbounded tool loop run
+        # arbitrarily far past a ceiling, which is the shape a runaway
+        # actually takes.
+        self._spend_budget_guard = spend_budget_guard
         self._pending_warnings: list[WarningEvent] = []
 
         self._state: AgentState = AgentState.IDLE
@@ -1957,6 +1963,19 @@ class Agent:
                     ),
                     code="turn_billed_cost_budget_exceeded",
                 )
+            if self._spend_budget_guard is not None and self._session_key:
+                try:
+                    spend_stop, spend_message = self._spend_budget_guard(self._session_key)
+                except Exception as exc:  # noqa: BLE001 - a budget check never fails a turn
+                    logger.warning("agent.spend_budget_check_failed", error=str(exc))
+                else:
+                    if spend_stop:
+                        return ErrorEvent(
+                            message=(
+                                spend_message or "A configured spend budget limit has been reached."
+                            ),
+                            code="budget_exceeded",
+                        )
             max_tool_errors = self._positive_int(getattr(self.config, "max_turn_tool_errors", 0))
             if max_tool_errors is not None and turn_tool_errors >= max_tool_errors:
                 return ErrorEvent(

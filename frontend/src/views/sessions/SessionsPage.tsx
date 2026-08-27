@@ -8,6 +8,7 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   CopyIcon,
+  FolderKanbanIcon,
   MessageSquareIcon,
   PlusIcon,
   PencilIcon,
@@ -44,9 +45,19 @@ import {
   type SortColumn,
   type Tone,
 } from './logic'
+import {
+  filterSessionsByProject,
+  projectId as projectIdOf,
+  projectName,
+  sessionProjectId,
+  type RawProject,
+} from '@/views/projects/logic'
 
 interface SessionsList {
   sessions?: RawSession[]
+}
+interface ProjectsList {
+  projects?: RawProject[]
 }
 interface AgentsList {
   agents?: (AgentEntry & { model?: string; type?: string; isBuiltin?: boolean })[]
@@ -213,6 +224,88 @@ function NewSessionDialog({
   )
 }
 
+// ── Move-to-project dialog (radio list of projects + "no project") ───────────
+function MoveToProjectDialog({
+  projects,
+  current,
+  submitting,
+  onCancel,
+  onSubmit,
+}: {
+  projects: RawProject[]
+  current: string
+  submitting: boolean
+  onCancel: () => void
+  onSubmit: (projectId: string | null) => void
+}) {
+  const titleId = useId()
+  const [value, setValue] = useState(current || 'none')
+  const canSubmit = !submitting && value !== (current || 'none')
+
+  function submit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!canSubmit) return
+    onSubmit(value === 'none' ? null : value)
+  }
+
+  return (
+    <ModalShell
+      role="dialog"
+      labelledBy={titleId}
+      onClose={onCancel}
+      overlayClassName="sess-modal__overlay"
+      className="sess-modal panel"
+    >
+      <form className="sess-dialog" onSubmit={submit}>
+        <header className="sess-dialog__head">
+          <span className="t-label">{t('sessions.eyebrow')}</span>
+          <h2 id={titleId} className="sess-dialog__title">
+            {t('sessions.moveDialogTitle')}
+          </h2>
+        </header>
+        <div className="sess-dialog__body">
+          <p className="sess-dim">{t('sessions.moveDialogBody')}</p>
+          <div className="sess-move-options" role="radiogroup" aria-labelledby={titleId}>
+            <label className="sess-move-option">
+              <input
+                type="radio"
+                name="sess-move-project"
+                value="none"
+                checked={value === 'none'}
+                onChange={() => setValue('none')}
+              />
+              <span>{t('sessions.moveNone')}</span>
+            </label>
+            {projects.map((p) => {
+              const id = projectIdOf(p)
+              return (
+                <label key={id} className="sess-move-option">
+                  <input
+                    type="radio"
+                    name="sess-move-project"
+                    value={id}
+                    checked={value === id}
+                    onChange={() => setValue(id)}
+                  />
+                  <span>{projectName(p)}</span>
+                </label>
+              )
+            })}
+          </div>
+        </div>
+        <footer className="sess-dialog__foot">
+          <Button type="button" variant="ghost" disabled={submitting} onClick={onCancel}>
+            {t('common.cancel')}
+          </Button>
+          <Button type="submit" disabled={!canSubmit}>
+            {submitting ? t('sessions.moveSubmitBusy') : t('sessions.moveSubmit')}
+          </Button>
+        </footer>
+      </form>
+    </ModalShell>
+  )
+}
+
 // ── Stat tile ────────────────────────────────────────────────────────────────
 function StatTile({
   label,
@@ -245,6 +338,7 @@ type Dialog =
   | { kind: 'new' }
   | { kind: 'delete'; key: string }
   | { kind: 'bulk'; keys: string[] }
+  | { kind: 'move'; key: string }
 
 export function SessionsPage() {
   const rpc = useRpc()
@@ -259,6 +353,7 @@ export function SessionsPage() {
   const [page, setPage] = useState(0)
   const [pageSize, setPageSize] = useState(25)
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [projectFilter, setProjectFilter] = useState('all')
   const [dialog, setDialog] = useState<Dialog>({ kind: 'none' })
   const [createError, setCreateError] = useState<string | null>(null)
   // Inline rename: the row key being edited, plus its in-flight input value.
@@ -288,6 +383,18 @@ export function SessionsPage() {
       await rpc.waitForConnection()
       const data = await rpc.call<SessionsList>('sessions.list', { limit: 200 })
       return data.sessions ?? []
+    },
+    refetchOnWindowFocus: false,
+  })
+
+  // Projects drive the badge, the filter dropdown, and the move dialog. Shares
+  // the ['projects'] cache key with ProjectsPage.
+  const projectsQuery = useQuery<RawProject[]>({
+    queryKey: ['projects'],
+    queryFn: async () => {
+      await rpc.waitForConnection()
+      const data = await rpc.call<ProjectsList>('projects.list', {})
+      return data.projects ?? []
     },
     refetchOnWindowFocus: false,
   })
@@ -339,10 +446,25 @@ export function SessionsPage() {
     return map
   }, [agentsQuery.data])
 
+  const projects = useMemo(() => projectsQuery.data ?? [], [projectsQuery.data])
+  const projectsById = useMemo(() => {
+    const map = new Map<string, RawProject>()
+    for (const p of projects) {
+      const id = projectIdOf(p)
+      if (id) map.set(id, p)
+    }
+    return map
+  }, [projects])
+
   const stats = sessionStats(allSessions)
   const filtered = useMemo(
-    () => sortSessions(filterSessions(allSessions, debounced), sortCol, sortAsc),
-    [allSessions, debounced, sortCol, sortAsc],
+    () =>
+      sortSessions(
+        filterSessions(filterSessionsByProject(allSessions, projectFilter), debounced),
+        sortCol,
+        sortAsc,
+      ),
+    [allSessions, debounced, sortCol, sortAsc, projectFilter],
   )
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize))
@@ -418,6 +540,25 @@ export function SessionsPage() {
     }
     renameMutation.mutate({ key, name: nameDraft })
   }
+
+  // ── Move-to-project mutation (sessions.patch projectId; null detaches) ─────
+  const moveMutation = useMutation({
+    mutationFn: (vars: { key: string; projectId: string | null }) =>
+      rpc.call('sessions.patch', { key: vars.key, projectId: vars.projectId }),
+    onSuccess: (_data, vars) => {
+      toast.success(vars.projectId ? t('sessions.toastMoved') : t('sessions.toastDetached'), {
+        id: 'sessions-move',
+      })
+      setDialog({ kind: 'none' })
+      invalidate()
+      void queryClient.invalidateQueries({ queryKey: ['projects'] })
+    },
+    onError: (err) => {
+      const message = err instanceof Error ? err.message : String(err)
+      toast.error(t('sessions.toastMoveFailed', { message }), { id: 'sessions-move-err' })
+      setDialog({ kind: 'none' })
+    },
+  })
 
   // ── Create-session mutation (optional inline agent create) ─────────────────
   const createMutation = useMutation({
@@ -629,6 +770,30 @@ export function SessionsPage() {
                 onChange={(e) => setSearch(e.target.value)}
               />
             </div>
+            {projects.length > 0 ? (
+              <label className="sess-page-size t-label">
+                <span>{t('sessions.filterProjectLabel')}</span>
+                <select
+                  value={projectFilter}
+                  aria-label={t('sessions.filterProjectLabel')}
+                  onChange={(e) => {
+                    setProjectFilter(e.target.value)
+                    setPage(0)
+                  }}
+                >
+                  <option value="all">{t('sessions.filterAllProjects')}</option>
+                  <option value="none">{t('sessions.filterNoProject')}</option>
+                  {projects.map((p) => {
+                    const id = projectIdOf(p)
+                    return (
+                      <option key={id} value={id}>
+                        {projectName(p)}
+                      </option>
+                    )
+                  })}
+                </select>
+              </label>
+            ) : null}
             <label className="sess-page-size t-label">
               <span>{t('sessions.rowsLabel')}</span>
               <select
@@ -747,6 +912,8 @@ export function SessionsPage() {
                     const sub = agentSubline(agentId, agentsById, agentsLoaded)
                     const isSel = selected.has(key)
                     const rowClass = isSel ? 'is-selected' : undefined
+                    const rowProjectId = sessionProjectId(row)
+                    const rowProject = rowProjectId ? projectsById.get(rowProjectId) : undefined
                     const rowContent = (
                       <>
                         <td className="sess-table__cell--check">
@@ -810,6 +977,14 @@ export function SessionsPage() {
                               <span>{name || t('sessions.renamePlaceholder')}</span>
                             </button>
                           ) : null}
+                          {rowProject ? (
+                            <div className="sess-key-content">
+                              <span className="sess-chip tone-info sess-project-chip">
+                                <FolderKanbanIcon aria-hidden="true" />
+                                {projectName(rowProject)}
+                              </span>
+                            </div>
+                          ) : null}
                           <div className="sess-key-content">
                             {sub ? (
                               <span
@@ -866,6 +1041,15 @@ export function SessionsPage() {
                             onClick={() => void copyKey(key)}
                           >
                             <CopyIcon />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon-xs"
+                            title={t('sessions.moveToProject')}
+                            aria-label={t('sessions.moveToProjectFor', { key })}
+                            onClick={() => setDialog({ kind: 'move', key })}
+                          >
+                            <FolderKanbanIcon />
                           </Button>
                           <Button
                             variant="ghost"
@@ -973,6 +1157,20 @@ export function SessionsPage() {
             busy={deleteMutation.isPending}
             onCancel={() => setDialog({ kind: 'none' })}
             onConfirm={() => deleteMutation.mutate([dialog.key])}
+          />
+        ) : null}
+
+        {dialog.kind === 'move' ? (
+          <MoveToProjectDialog
+            // Projects are cross-agent: any session may join any project.
+            projects={projects}
+            current={(() => {
+              const row = allSessions.find((s) => (s.key ?? '') === dialog.key)
+              return row ? sessionProjectId(row) : ''
+            })()}
+            submitting={moveMutation.isPending}
+            onCancel={() => setDialog({ kind: 'none' })}
+            onSubmit={(projectId) => moveMutation.mutate({ key: dialog.key, projectId })}
           />
         ) : null}
 

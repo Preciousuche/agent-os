@@ -90,6 +90,12 @@ export const chat = defineNamespace('chat', {
   sessionRenamed: 'Session renamed',
   sessionRenameCleared: 'Session name cleared',
   sessionRenameFailed: 'Rename failed: {message}',
+  sessionMoveToProjectAria: 'Move this session to a project',
+  sessionMoveToProject: 'Move to project',
+  sessionMoveNoProject: 'No project',
+  sessionMoved: 'Session moved to project',
+  sessionMoveDetached: 'Session removed from project',
+  sessionMoveFailed: 'Move failed: {message}',
   sessionSwitchDialog: 'Switch session',
   sessionKeyPlaceholder: 'Enter session key...',
   sessionKeyLabel: 'Session key',
@@ -110,6 +116,9 @@ export const chat = defineNamespace('chat', {
   groupAgents: 'Agents',
   groupSessions: 'Sessions',
   groupOther: 'Other',
+
+  // Projects integration.
+  projectBadgeTitle: 'This session is in project "{name}" and shares its knowledge.',
 
   // Run status labels (logic.ts).
   runQueued: 'Queued',

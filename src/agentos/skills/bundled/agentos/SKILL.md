@@ -1,6 +1,6 @@
 ---
 name: agentos
-description: "Operate and configure AgentOS itself: the `agentos` CLI, agentos.toml, gateway/Web UI, providers and models, web search, X (Twitter) search via xAI (`x_search`; SuperGrok login or XAI_API_KEY), skills, channels, sessions, cron, sandbox, and memory. Use when: (1) the user asks to change an AgentOS setting or turn a capability on (model, provider, router tier, auth/login, channels, search), (2) starting, stopping, or debugging the gateway or Web UI, (3) installing, updating, or removing skills and taps, (4) inspecting sessions, usage/cost, cron jobs, or diagnostics, (5) migrating from another agent runtime. NOT for: authoring new skills (see docs/features/skills.md), operating other agent CLIs, or modifying AgentOS source code."
+description: "Operate and configure AgentOS itself: the `agentos` CLI, agentos.toml, gateway/Web UI, providers and models, web search, X (Twitter) search via xAI (`x_search`; SuperGrok login or XAI_API_KEY), skills, channels, sessions, projects (session groups with shared knowledge), cron, sandbox, and memory. Use when: (1) the user asks to change an AgentOS setting or turn a capability on (model, provider, router tier, auth/login, channels, search), (2) starting, stopping, or debugging the gateway or Web UI, (3) installing, updating, or removing skills and taps, (4) inspecting sessions, usage/cost, cron jobs, or diagnostics, (5) migrating from another agent runtime. NOT for: authoring new skills (see docs/features/skills.md), operating other agent CLIs, or modifying AgentOS source code."
 always: false
 triggers:
   - agentos
@@ -130,6 +130,7 @@ Top-level: `init`, `onboard`, `configure`, `doctor`, `upgrade`, `chat`,
 | `models` | `list` |
 | `skills` | `init`, `list`, `search`, `view`, `install`, `uninstall`, `update`, `publish`, `tap add/list/remove` |
 | `sessions` | `list`, `show`, `rename`, `resume`, `abort`, `delete`, `export` |
+| `projects` | `list`, `create` (`--knowledge`/`--knowledge-file`), `show`, `update`, `delete`, `move <session> <project\|none>` — group sessions across agents; the knowledge text is injected into every member session's prompt |
 | `cron` | `list`, `status`, `add` (also takes `--session-key`, the chat a job reports into), `update` (both take `--job-kind`, `--script`, `--script-arg`, `--workdir`, `--elevated`, `--elevated-mode`, `--tool-policy`; the policy's `profile` must be one of `coding`/`full`/`memory_only`/`messaging`/`minimal`, or be omitted), `remove`, `run`, `runs` |
 | `channels` | `list`, `status`, `types`, `describe`, `native-commands`, `add`, `remove`, `enable`, `disable`, `edit`, `restart`, `logout`, `pairing …` |
 | `memory` | `status`, `index`, `list`, `search`, `show`, `embedding-download`, `raw-fallbacks …` |
@@ -215,6 +216,7 @@ Main `agentos.toml` sections (full commented reference:
 | `[prompt]` | prompt-layer flags: `platform_hint_enabled`, `env_probe_enabled` (local-toolchain block, names only) |
 | `[prompt_cache]` | Prompt-cache continuity: `mode` = `auto` (default) \| `on` \| `off`. Env override: `AGENTOS_CACHE_MODE` (legacy `prompt_cache.enabled` / `AGENTOS_CACHE_ENABLED` deprecated) |
 | `[safety]` | Prompt-ingress safety: `wrap_untrusted_workspace` (default true), `injection_scan_mode` (`report` default, `enforce` redacts matched workspace-file content, `off`) |
+| `[budgets]` | money spend ceilings (USD): `session_limit`/`session_warn`, `daily_limit`/`daily_warn` (per UTC day, persisted across restarts), and per-key `[budgets.agent_daily_limit]` / `[budgets.channel_daily_limit]` (plus `*_warn`). A turn at or above a hard limit is refused with `budget_exceeded`; a warn threshold raises a one-shot `budget_warning`. Nothing is enforced until a ceiling is set |
 | `[compaction]`, `[agent_token_saving]`, `[task_runtime]` | context compaction, tool-result projection, concurrency |
 
 Slack native commands auto-sync when a Slack channel entry provides `app_id`,
@@ -465,6 +467,11 @@ agentos sessions rename <id> "api-refactor"   # --clear drops the name
 agentos sessions list --search api-refactor
 # In chat, /rename does the same. The `session_rename` tool names the session
 # the agent is running in — use it when the user just asks in prose.
+# Group related sessions into a project; its knowledge text is injected into
+# every member session. Delete keeps the sessions (they just detach).
+agentos projects create "Token research" --knowledge-file notes.md
+agentos projects move <session-id> <project-id>   # 'none' detaches
+agentos projects show <project-id>
 agentos cron list / add / run <id> / runs
 # --job-kind decides what fires. Default 'auto' = reminder: --text is delivered
 # verbatim and NO LLM runs, so a job that should think needs agent_turn.
@@ -515,7 +522,8 @@ agentos migrate hermes --source <dir> [--apply]   # dry-run first, then --apply
 The gateway is also a REST + WebSocket server on port 18791:
 `GET /api/config|sessions|agents|cron|usage|system/status|channels/status`,
 `POST /api/chat`, `GET /api/chat/history`, approvals endpoints under
-`/api/approvals*`, and `WS /ws` (primary RPC transport). On loopback binds
+`/api/approvals*`, and `WS /ws` (primary RPC transport; `projects.*` CRUD
+lives there alongside `sessions.*`). On loopback binds
 auth is optional; on public binds the `[auth]` token gates every request.
 Full reference: `docs/http-api.md` (https://useagentos.dev/docs/http-api).
 

@@ -76,6 +76,28 @@ For simple one-shot automation, bound the run:
 agentos agent --max-iterations 20 --timeout 600 -m "Bounded task"
 ```
 
+## Cap Spend with a Hard Stop
+
+Cost views are after the fact. To bound spend while it happens, set ceilings in
+`[budgets]`:
+
+```toml
+[budgets]
+session_limit = 5.0
+daily_limit = 50.0
+daily_warn = 40.0
+```
+
+A turn that starts at or above a hard limit is refused before any provider call
+with a `budget_exceeded` error, and ceilings are re-checked between iterations
+so a long tool loop stops at the ceiling too. A `*_warn` threshold raises a
+one-shot warning without stopping the turn. Spend is persisted to
+`~/.agentos/state/spend_ledger.db`, so a ceiling survives a gateway restart.
+Per-agent and per-channel ceilings use `[budgets.agent_daily_limit]` and
+`[budgets.channel_daily_limit]`.
+
+See [`configuration.md`](configuration.md#spend-budgets) for the full key list.
+
 ## Notes and Limits
 
 - Cost is an estimate based on recorded runtime usage and configured pricing.

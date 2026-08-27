@@ -19,7 +19,6 @@ from agentos.tools.policy.checks import (
     ChannelAdmissionPolicy,
     DenyListPolicy,
     PrivateMemoryScopePolicy,
-    ProfilePolicy,
 )
 from agentos.tools.policy.finalize import finalize
 from agentos.tools.policy.types import DispatchInput, PolicyCheck, PolicyDecision
@@ -34,7 +33,6 @@ __all__ = [
     "PolicyCheck",
     "PolicyDecision",
     "PrivateMemoryScopePolicy",
-    "ProfilePolicy",
     "finalize",
     "run_chain",
     "run_chain_with_emit",

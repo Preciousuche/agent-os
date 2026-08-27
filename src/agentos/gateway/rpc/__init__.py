@@ -66,6 +66,7 @@ import agentos.gateway.rpc_memory  # noqa: E402, F401
 import agentos.gateway.rpc_models  # noqa: E402, F401
 import agentos.gateway.rpc_onboarding  # noqa: E402, F401
 import agentos.gateway.rpc_plan  # noqa: E402, F401
+import agentos.gateway.rpc_projects  # noqa: E402, F401
 import agentos.gateway.rpc_router  # noqa: E402, F401
 import agentos.gateway.rpc_secrets  # noqa: E402, F401
 import agentos.gateway.rpc_sessions  # noqa: E402, F401
@@ -74,7 +75,6 @@ import agentos.gateway.rpc_system  # noqa: E402, F401
 import agentos.gateway.rpc_tools  # noqa: E402, F401
 import agentos.gateway.rpc_updates  # noqa: E402, F401
 import agentos.gateway.rpc_usage  # noqa: E402, F401
-import agentos.gateway.rpc_wizard  # noqa: E402, F401
 
 # Fail fast if any registered handler crosses a connection-surface boundary.
 validate_classification()

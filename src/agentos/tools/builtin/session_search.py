@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from agentos.tools.registry import ToolRegistry, tool
-from agentos.tools.types import ToolError
+from agentos.tools.types import ToolError, current_tool_context
 
 if TYPE_CHECKING:
     from agentos.session.storage import SessionStorage
@@ -40,7 +40,8 @@ def create_session_search_tool(
             "Ordinary recall should start with memory_search, which defaults to "
             "curated memory source files. To search indexed session snippets through "
             "memory_search, use source=sessions or source=all. session_search does "
-            "not search MEMORY.md or memory/**/*.md."
+            "not search MEMORY.md or memory/**/*.md. With scope=project the search "
+            "is restricted to sessions in the calling session's project."
         ),
         params={
             "query": {
@@ -50,6 +51,14 @@ def create_session_search_tool(
             "session_id": {
                 "type": "string",
                 "description": "Optional: restrict search to a specific session ID.",
+            },
+            "scope": {
+                "type": "string",
+                "enum": ["all", "project"],
+                "description": (
+                    "Optional: 'project' restricts hits to sibling sessions in the "
+                    "calling session's project (default 'all')."
+                ),
             },
             "limit": {
                 "type": "integer",
@@ -63,6 +72,7 @@ def create_session_search_tool(
     async def session_search(
         query: str,
         session_id: str | None = None,
+        scope: str = "all",
         limit: int = 20,
     ) -> str:
         if active_storage is None:
@@ -73,11 +83,27 @@ def create_session_search_tool(
 
         limit = max(1, min(50, limit))
 
+        project_id: str | None = None
+        if scope == "project":
+            ctx = current_tool_context.get()
+            session_key = getattr(ctx, "session_key", None) if ctx else None
+            session = await active_storage.get_session(session_key) if session_key else None
+            project_id = getattr(session, "project_id", None) if session else None
+            if not project_id:
+                return json.dumps(
+                    {
+                        "query": query,
+                        "results": [],
+                        "note": "Session is not in a project; scope=project found nothing.",
+                    }
+                )
+
         try:
             results = await active_storage.search_transcript(
                 query=query,
                 session_id=session_id,
                 limit=limit,
+                project_id=project_id,
             )
         except Exception as exc:
             logger.warning("session_search.error", query=query[:80], error=str(exc))

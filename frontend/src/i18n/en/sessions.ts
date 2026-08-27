@@ -145,4 +145,19 @@ export const sessions = defineNamespace('sessions', {
   toastAgentExists: 'Agent "{id}" already exists — pick it from the list instead.',
   toastCopied: 'Copied session key',
   toastCopyFailed: 'Copy failed: {message}',
+
+  // Projects integration.
+  moveToProject: 'Move to project',
+  moveToProjectFor: 'Move session {key} to a project',
+  moveDialogTitle: 'Move to project',
+  moveDialogBody: 'Sessions in a project share its knowledge in every turn.',
+  moveNone: 'No project',
+  moveSubmit: 'Move',
+  moveSubmitBusy: 'Moving…',
+  toastMoved: 'Session moved to project',
+  toastDetached: 'Session removed from project',
+  toastMoveFailed: 'Move failed: {message}',
+  filterAllProjects: 'All projects',
+  filterNoProject: 'No project',
+  filterProjectLabel: 'Filter by project',
 } as const)

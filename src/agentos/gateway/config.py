@@ -37,6 +37,7 @@ from agentos.router_tiers import (
     normalize_tier_mapping,
 )
 from agentos.sandbox.config import SandboxSettings
+from agentos.session.keys import normalize_agent_id
 from agentos.skills.injector import DEFAULT_MAX_SKILLS_PROMPT_CHARS
 from agentos.skills.outline import DEFAULT_MAX_SKILL_VIEW_CHARS
 
@@ -1832,6 +1833,129 @@ class UpdatesConfig(BaseModel):
     notify: bool = True
 
 
+class BudgetsConfig(BaseModel):
+    """Money spend ceilings — hard stop plus warn thresholds.
+
+    Every ceiling is US dollars of estimated (or provider-billed, when the
+    provider reports one) model spend. ``None`` means "no ceiling for this
+    scope", which is the default for all of them: a fresh install enforces
+    nothing until an operator sets a number.
+
+    Session ceilings are measured against the session's own accumulated cost.
+    The ``*_daily_*`` ceilings are measured against a persisted per-UTC-day
+    ledger, so they survive a gateway restart — the point of the feature is
+    that a runaway overnight loop cannot be reset by a crash-and-respawn.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    """Master switch. Left on so setting a ceiling is enough to enforce it;
+    set ``false`` to suspend every ceiling without deleting the numbers."""
+
+    session_limit: float | None = Field(default=None, ge=0.0)
+    """Hard stop once one session's accumulated cost reaches this."""
+
+    session_warn: float | None = Field(default=None, ge=0.0)
+    """Warn (once per session) at this session cost. Must not exceed
+    ``session_limit`` when both are set."""
+
+    daily_limit: float | None = Field(default=None, ge=0.0)
+    """Hard stop once gateway-wide spend for the current UTC day reaches this."""
+
+    daily_warn: float | None = Field(default=None, ge=0.0)
+    """Warn (once per day) at this gateway-wide daily spend."""
+
+    agent_daily_limit: dict[str, float] = Field(default_factory=dict)
+    """Per-agent daily hard stops, keyed by agent id."""
+
+    agent_daily_warn: dict[str, float] = Field(default_factory=dict)
+    """Per-agent daily warn thresholds, keyed by agent id."""
+
+    channel_daily_limit: dict[str, float] = Field(default_factory=dict)
+    """Per-channel daily hard stops, keyed by channel name (``telegram``,
+    ``slack``, ``webchat``, ``system``, ...)."""
+
+    channel_daily_warn: dict[str, float] = Field(default_factory=dict)
+    """Per-channel daily warn thresholds, keyed by channel name."""
+
+    @staticmethod
+    def _normalized_keys(value: Any, normalize: Any) -> Any:
+        """Rewrite scope keys to their canonical form, refusing collisions.
+
+        Two spellings of one scope (``default`` and ``main``, ``Telegram`` and
+        ``telegram``) would otherwise collapse into a single entry and one of
+        the operator's two numbers would vanish with no error.
+        """
+        if not isinstance(value, dict):
+            return value
+        normalized: dict[str, Any] = {}
+        seen: dict[str, str] = {}
+        for key, amount in value.items():
+            canonical = normalize(str(key))
+            if canonical in seen:
+                raise ValueError(
+                    f"budget keys '{seen[canonical]}' and '{key}' both refer to "
+                    f"'{canonical}' — keep only one"
+                )
+            seen[canonical] = str(key)
+            normalized[canonical] = amount
+        return normalized
+
+    @field_validator("agent_daily_limit", "agent_daily_warn", mode="before")
+    @classmethod
+    def _normalize_agent_keys(cls, value: Any) -> Any:
+        return cls._normalized_keys(value, normalize_agent_id)
+
+    @field_validator("channel_daily_limit", "channel_daily_warn", mode="before")
+    @classmethod
+    def _normalize_channel_keys(cls, value: Any) -> Any:
+        return cls._normalized_keys(value, lambda key: key.strip().lower())
+
+    @field_validator(
+        "agent_daily_limit",
+        "agent_daily_warn",
+        "channel_daily_limit",
+        "channel_daily_warn",
+    )
+    @classmethod
+    def _reject_negative_ceilings(cls, value: dict[str, float]) -> dict[str, float]:
+        for key, amount in value.items():
+            if amount < 0:
+                raise ValueError(f"budget ceiling for '{key}' must be >= 0 (got {amount})")
+        return value
+
+    @model_validator(mode="after")
+    def _warn_below_limit(self) -> BudgetsConfig:
+        """A warn threshold above its hard stop can never fire — reject it.
+
+        Silently accepting it would leave the operator believing they have an
+        early-warning signal that the hard stop always pre-empts.
+        """
+        pairs: list[tuple[str, float | None, float | None]] = [
+            ("session", self.session_warn, self.session_limit),
+            ("daily", self.daily_warn, self.daily_limit),
+        ]
+        for scope, warn, limit in pairs:
+            if warn is not None and limit is not None and warn > limit:
+                raise ValueError(
+                    f"budgets.{scope}_warn ({warn}) must not exceed budgets.{scope}_limit ({limit})"
+                )
+        scoped = [
+            ("agent_daily", self.agent_daily_warn, self.agent_daily_limit),
+            ("channel_daily", self.channel_daily_warn, self.channel_daily_limit),
+        ]
+        for scope, warns, limits in scoped:
+            for key, warn_amount in warns.items():
+                limit_amount = limits.get(key)
+                if limit_amount is not None and warn_amount > limit_amount:
+                    raise ValueError(
+                        f"budgets.{scope}_warn['{key}'] ({warn_amount}) must not exceed "
+                        f"budgets.{scope}_limit['{key}'] ({limit_amount})"
+                    )
+        return self
+
+
 class TlsConfig(BaseSettings):
     """Optional TLS termination at the gateway itself.
 
@@ -1934,6 +2058,7 @@ class GatewayConfig(BaseSettings):
     agents: list[AgentEntryConfig] = Field(default_factory=list)
     agents_defaults: AgentDefaults = Field(default_factory=AgentDefaults)
     subagents: SubagentsGatewayConfig = Field(default_factory=SubagentsGatewayConfig)
+    budgets: BudgetsConfig = Field(default_factory=BudgetsConfig)
 
     updates: UpdatesConfig = Field(default_factory=UpdatesConfig)
 

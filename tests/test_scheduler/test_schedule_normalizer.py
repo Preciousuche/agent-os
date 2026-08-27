@@ -85,6 +85,30 @@ def test_normalizer_wraps_legacy_expression() -> None:
     assert tz == "America/Los_Angeles"
 
 
+def test_normalizer_expression_accepts_timezone_alias() -> None:
+    # The expression-shorthand path must honour the `timezone` alias exactly
+    # like the structured path does via _top_level_tz. A legacy caller passing
+    # {"expression": "...", "timezone": "Asia/Shanghai"} used to silently drop
+    # the tz while the "tz" key kept it.
+    kind, value, tz = coerce_schedule_from_params(
+        {"expression": "*/5 * * * *", "timezone": "Asia/Shanghai"}
+    )
+    assert kind == ScheduleKind.CRON
+    assert value == "*/5 * * * *"
+    assert tz == "Asia/Shanghai"
+
+
+def test_normalizer_expression_rejects_conflicting_tz_and_timezone() -> None:
+    with pytest.raises(ValueError, match="tz conflicts with timezone"):
+        coerce_schedule_from_params(
+            {
+                "expression": "*/5 * * * *",
+                "tz": "Asia/Shanghai",
+                "timezone": "America/Los_Angeles",
+            }
+        )
+
+
 def test_normalizer_rejects_invalid_tz() -> None:
     with pytest.raises(ValueError, match="schedule.tz invalid"):
         coerce_schedule_from_params(

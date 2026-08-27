@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import getpass
 import os
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
 from uuid import uuid4
@@ -181,13 +181,20 @@ async def run_standalone_chat(
     workspace: str | None = None,
     workspace_strict: bool | None = None,
     timeout: float | None = None,
+    turn_hooks: Sequence[Any] | None = None,
+    compaction_hooks: Sequence[Any] | None = None,
+    tool_hooks: Sequence[Any] | None = None,
 ) -> None:
     """Run standalone chat without owning a concrete terminal application."""
     from agentos.cli.agent_cmd import _resolve_workspace_strict
     from agentos.gateway import build_services, build_turn_runner_from_services
     from agentos.gateway.routing import build_cli_route_envelope, tool_context_from_envelope
 
-    svc = await build_services()
+    svc = await build_services(
+        turn_hooks=turn_hooks,
+        compaction_hooks=compaction_hooks,
+        tool_hooks=tool_hooks,
+    )
     session_manager = svc.session_manager
     if session_manager is None:
         raise RuntimeError("standalone chat requires session manager")

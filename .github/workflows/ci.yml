@@ -33,26 +33,17 @@ jobs:
 
       - name: List changed files
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           changed_files="${RUNNER_TEMP}/changed-files.txt"
 
-          case "${{ github.event_name }}" in
-            pull_request)
-              git diff --name-only \
-                "${{ github.event.pull_request.base.sha }}" \
-                "${{ github.event.pull_request.head.sha }}" > "${changed_files}"
-              ;;
-            push)
-              printf '.ci/run-all\n' > "${changed_files}"
-              ;;
-            *)
-              printf '.ci/run-all\n' > "${changed_files}"
-              ;;
-          esac
+          bash .github/scripts/list-ci-changed-files.sh \
+            "${EVENT_NAME}" "${BASE_SHA}" "${HEAD_SHA}" "${changed_files}"
 
-          echo "Changed files:"
-          sed 's/^/  /' "${changed_files}"
           printf 'CHANGED_FILES=%s\n' "${changed_files}" >> "${GITHUB_ENV}"
 
       - name: Classify changed files

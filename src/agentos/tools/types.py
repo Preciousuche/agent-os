@@ -105,6 +105,10 @@ SUBAGENT_TOOL_DENY: frozenset[str] = frozenset(
         "session_search",
         "message",
         "publish_artifact",
+        "projects_create",
+        "projects_list",
+        "projects_update",
+        "projects_move_session",
     }
 )
 

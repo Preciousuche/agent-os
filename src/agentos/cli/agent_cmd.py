@@ -7,6 +7,7 @@ import copy
 import getpass
 import json
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -114,6 +115,9 @@ async def run_agent_once(
     scratch_dir: str | None = None,
     workspace_lockdown: bool = False,
     permissions: str | None = None,
+    turn_hooks: Sequence[Any] | None = None,
+    compaction_hooks: Sequence[Any] | None = None,
+    tool_hooks: Sequence[Any] | None = None,
 ) -> AgentRunResult:
     """Run a single agent turn through build_services() and TurnRunner.run()."""
     from agentos.agents.scope import resolve_agent_workspace_dir
@@ -185,6 +189,9 @@ async def run_agent_once(
         session_db_path=session_db_path,
         extra_agent_ids=extra_agents,
         seed_agent_workspaces=seed_agent_workspaces,
+        turn_hooks=turn_hooks,
+        compaction_hooks=compaction_hooks,
+        tool_hooks=tool_hooks,
     )
     assert svc.session_manager is not None
     session_key = canonicalize_session_key(session_id or f"agent:{agent_id}:main")

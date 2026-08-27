@@ -311,6 +311,7 @@ class GatewayClient:
         agent_id: str = "main",
         model: str | None = None,
         display_name: str | None = None,
+        project_id: str | None = None,
     ) -> str:
         """Create a new session, return session key."""
         params: dict[str, Any] = {"agentId": agent_id, "kind": "cli"}
@@ -318,6 +319,8 @@ class GatewayClient:
             params["model"] = model
         if display_name:
             params["displayName"] = display_name
+        if project_id:
+            params["projectId"] = project_id
         result = await self._call("sessions.create", params)
         return cast(str, result["key"])
 
@@ -365,6 +368,57 @@ class GatewayClient:
     async def patch_session(self, key: str, **fields: Any) -> dict[str, Any]:
         params: dict[str, Any] = {"key": key, **fields}
         return cast(dict[str, Any], await self._call("sessions.patch", params))
+
+    async def create_project(
+        self,
+        name: str,
+        knowledge: str = "",
+        agent_id: str = "main",
+    ) -> dict[str, Any]:
+        return cast(
+            dict[str, Any],
+            await self._call(
+                "projects.create",
+                {"agentId": agent_id, "name": name, "knowledge": knowledge},
+            ),
+        )
+
+    async def list_projects(self, agent_id: str | None = None) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if agent_id:
+            params["agentId"] = agent_id
+        return cast(dict[str, Any], await self._call("projects.list", params))
+
+    async def get_project(self, project_id: str) -> dict[str, Any]:
+        return cast(
+            dict[str, Any],
+            await self._call("projects.get", {"projectId": project_id}),
+        )
+
+    async def update_project(
+        self,
+        project_id: str,
+        name: str | None = None,
+        knowledge: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"projectId": project_id}
+        if name is not None:
+            params["name"] = name
+        if knowledge is not None:
+            params["knowledge"] = knowledge
+        return cast(dict[str, Any], await self._call("projects.update", params))
+
+    async def delete_project(self, project_id: str) -> dict[str, Any]:
+        return cast(
+            dict[str, Any],
+            await self._call("projects.delete", {"projectId": project_id}),
+        )
+
+    async def move_session_to_project(
+        self, key: str, project_id: str | None
+    ) -> dict[str, Any]:
+        """Move a session into a project; ``None`` detaches it."""
+        return await self.patch_session(key, projectId=project_id)
 
     async def list_models(
         self, provider: str | None = None, capabilities: list[str] | None = None

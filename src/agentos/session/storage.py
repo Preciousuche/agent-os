@@ -13,6 +13,7 @@ from agentos.session.models import (
     AgentTaskRecord,
     AgentTaskStatus,
     MemoryDurableReceipt,
+    ProjectNode,
     SessionContextState,
     SessionNode,
     SessionSummary,
@@ -32,7 +33,8 @@ class StaleEpochError(Exception):
 # Version 5 added structured compaction summary metadata.
 # Version 6 added portable/provider context state records.
 # Version 7 added archived transcript rows for canonical recovery after compaction.
-SCHEMA_VERSION = 7
+# Version 8 added the projects table and sessions.project_id.
+SCHEMA_VERSION = 8
 
 # SQLite CREATE statements derived from SQLModel metadata
 _CREATE_SESSIONS = """
@@ -87,12 +89,33 @@ CREATE TABLE IF NOT EXISTS sessions (
     channel TEXT,
     group_id TEXT,
     subject TEXT,
+    project_id TEXT,
     origin TEXT,
     agent_id TEXT NOT NULL DEFAULT 'main',
     schema_version INTEGER NOT NULL DEFAULT 1,
     epoch INTEGER NOT NULL DEFAULT 0
 )
 """
+
+_CREATE_PROJECTS = """
+CREATE TABLE IF NOT EXISTS projects (
+    project_id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL DEFAULT 'main',
+    name TEXT NOT NULL,
+    knowledge TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    schema_version INTEGER NOT NULL DEFAULT 1
+)
+"""
+
+_CREATE_IDX_PROJECTS_AGENT = (
+    "CREATE INDEX IF NOT EXISTS idx_projects_agent ON projects(agent_id)"
+)
+
+_CREATE_IDX_SESSIONS_PROJECT = (
+    "CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id)"
+)
 
 _CREATE_TRANSCRIPT = """
 CREATE TABLE IF NOT EXISTS transcript_entries (
@@ -408,6 +431,8 @@ class SessionStorage:
     async def _initialize_schema(self) -> None:
         assert self._conn is not None
         await self._conn.execute(_CREATE_SESSIONS)
+        await self._conn.execute(_CREATE_PROJECTS)
+        await self._conn.execute(_CREATE_IDX_PROJECTS_AGENT)
         await self._conn.execute(_CREATE_TRANSCRIPT)
         await self._conn.execute(_CREATE_IDX_TRANSCRIPT_SESSION)
         await self._conn.execute(_CREATE_IDX_TRANSCRIPT_KEY)
@@ -438,6 +463,8 @@ class SessionStorage:
         await self._migrate_transcript_turn_usage_column()
         await self._migrate_summary_metadata_columns()
         await self._migrate_memory_durable_receipt_coverage_columns()
+        await self._migrate_session_project_id_column()
+        await self._conn.execute(_CREATE_IDX_SESSIONS_PROJECT)
         await self._conn.execute(_CREATE_IDX_MEMORY_DURABLE_RECEIPTS_COVERAGE)
         await self._conn.commit()
         await self.mark_abandoned_agent_tasks()
@@ -567,6 +594,15 @@ class SessionStorage:
         if changed:
             await self._conn.commit()
 
+    async def _migrate_session_project_id_column(self) -> None:
+        """Idempotently add the project grouping column to sessions."""
+        assert self._conn is not None
+        async with self._conn.execute("PRAGMA table_info(sessions)") as cur:
+            columns = [row[1] for row in await cur.fetchall()]
+        if "project_id" not in columns:
+            await self._conn.execute("ALTER TABLE sessions ADD COLUMN project_id TEXT")
+            await self._conn.commit()
+
     @property
     def conn(self) -> Any:
         if self._conn is None:
@@ -616,6 +652,7 @@ class SessionStorage:
         limit: int = 100,
         offset: int = 0,
         spawned_by: str | None = None,
+        project_id: str | None = None,
     ) -> list[SessionNode]:
         clauses: list[str] = []
         params: list[Any] = []
@@ -628,6 +665,9 @@ class SessionStorage:
         if spawned_by is not None:
             clauses.append("spawned_by = ?")
             params.append(canonicalize_session_key(spawned_by))
+        if project_id is not None:
+            clauses.append("project_id = ?")
+            params.append(project_id)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params += [limit, offset]
         sql = f"SELECT * FROM sessions {where} ORDER BY updated_at DESC LIMIT ? OFFSET ?"
@@ -720,6 +760,85 @@ class SessionStorage:
         ) as cur:
             row = await cur.fetchone()
         return int(row[0]) if row is not None else 0
+
+    # ── Project CRUD ────────────────────────────────────────────────────────
+
+    async def upsert_project(self, project: ProjectNode) -> None:
+        project.agent_id = normalize_agent_id(project.agent_id)
+        data = project.model_dump()
+        cols = list(data.keys())
+        placeholders = ", ".join("?" for _ in cols)
+        updates = ", ".join(f"{c}=excluded.{c}" for c in cols if c != "project_id")
+        values = [_serialize(data[c]) for c in cols]
+        sql = (
+            f"INSERT INTO projects ({', '.join(cols)}) VALUES ({placeholders}) "
+            f"ON CONFLICT(project_id) DO UPDATE SET {updates}"
+        )
+        await self.conn.execute(sql, values)
+        await self.conn.commit()
+
+    async def get_project(self, project_id: str) -> ProjectNode | None:
+        async with self.conn.execute(
+            "SELECT * FROM projects WHERE project_id = ?", (project_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return ProjectNode(**dict(row))
+
+    async def list_projects(self, agent_id: str | None = None) -> list[ProjectNode]:
+        if agent_id is not None:
+            sql = "SELECT * FROM projects WHERE agent_id = ? ORDER BY updated_at DESC"
+            params: list[Any] = [normalize_agent_id(agent_id)]
+        else:
+            sql = "SELECT * FROM projects ORDER BY updated_at DESC"
+            params = []
+        async with self.conn.execute(sql, params) as cur:
+            rows = await cur.fetchall()
+        return [ProjectNode(**dict(r)) for r in rows]
+
+    async def delete_project(self, project_id: str) -> int:
+        """Delete a project, detaching its sessions (they survive project-less).
+
+        Returns the number of sessions detached. Both writes run in one
+        transaction: no foreign keys exist, so a partial failure would leave
+        sessions pointing at a deleted project.
+        """
+        await self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            async with self.conn.execute(
+                "SELECT COUNT(*) FROM sessions WHERE project_id = ?", (project_id,)
+            ) as cur:
+                row = await cur.fetchone()
+            detached = int(row[0]) if row else 0
+            await self.conn.execute(
+                "UPDATE sessions SET project_id = NULL WHERE project_id = ?",
+                (project_id,),
+            )
+            await self.conn.execute(
+                "DELETE FROM projects WHERE project_id = ?", (project_id,)
+            )
+            await self.conn.commit()
+        except Exception:
+            await self.conn.rollback()
+            raise
+        return detached
+
+    async def count_sessions_in_project(self, project_id: str) -> int:
+        async with self.conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE project_id = ?", (project_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        return int(row[0]) if row else 0
+
+    async def count_sessions_by_project(self) -> dict[str, int]:
+        """Return {project_id: session_count} for every project referenced."""
+        async with self.conn.execute(
+            "SELECT project_id, COUNT(*) FROM sessions "
+            "WHERE project_id IS NOT NULL GROUP BY project_id"
+        ) as cur:
+            rows = await cur.fetchall()
+        return {str(r[0]): int(r[1]) for r in rows}
 
     # ── AgentTask ledger CRUD ───────────────────────────────────────────────
 
@@ -1587,35 +1706,38 @@ class SessionStorage:
         query: str,
         session_id: str | None = None,
         limit: int = 20,
+        project_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Full-text search across transcript entries.
 
-        Returns dicts with: id, session_key, role, snippet, created_at.
+        ``project_id`` restricts hits to transcripts of sessions in that
+        project. Returns dicts with: id, session_key, role, snippet,
+        created_at.
         """
         safe_q = self.sanitize_fts_query(query)
         if safe_q == '""':
             return []
 
+        clauses = ["f.content MATCH ?"]
+        params: list[Any] = [safe_q]
+        joins = ""
         if session_id:
-            sql = (
-                "SELECT t.id, t.session_key, t.role, t.created_at, "
-                "snippet(transcript_fts, 0, '>>>', '<<<', '...', 48) AS snippet "
-                "FROM transcript_fts f "
-                "JOIN transcript_entries t ON f.rowid = t.id "
-                "WHERE f.content MATCH ? AND t.session_id = ? "
-                "ORDER BY f.rank LIMIT ?"
-            )
-            params: list[Any] = [safe_q, session_id, limit]
-        else:
-            sql = (
-                "SELECT t.id, t.session_key, t.role, t.created_at, "
-                "snippet(transcript_fts, 0, '>>>', '<<<', '...', 48) AS snippet "
-                "FROM transcript_fts f "
-                "JOIN transcript_entries t ON f.rowid = t.id "
-                "WHERE f.content MATCH ? "
-                "ORDER BY f.rank LIMIT ?"
-            )
-            params = [safe_q, limit]
+            clauses.append("t.session_id = ?")
+            params.append(session_id)
+        if project_id:
+            joins = "JOIN sessions s ON s.session_id = t.session_id "
+            clauses.append("s.project_id = ?")
+            params.append(project_id)
+        sql = (
+            "SELECT t.id, t.session_key, t.role, t.created_at, "
+            "snippet(transcript_fts, 0, '>>>', '<<<', '...', 48) AS snippet "
+            "FROM transcript_fts f "
+            "JOIN transcript_entries t ON f.rowid = t.id "
+            f"{joins}"
+            f"WHERE {' AND '.join(clauses)} "
+            "ORDER BY f.rank LIMIT ?"
+        )
+        params.append(limit)
 
         async with self.conn.execute(sql, params) as cur:
             rows = await cur.fetchall()

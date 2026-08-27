@@ -8,7 +8,7 @@ import logging
 import os
 import secrets
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -268,6 +268,9 @@ class ServiceContainer:
     heartbeat_loop: Any = None
     heartbeat_watcher: Any = None
     _compaction_listener_remove: Callable[[], None] | None = None
+    turn_hooks: Sequence[Any] | None = None
+    compaction_hooks: Sequence[Any] | None = None
+    tool_hooks: Sequence[Any] | None = None
 
     # Backward-compat alias — returns the "main" store (or None).
     @property
@@ -608,6 +611,10 @@ async def dispatch_task_runtime_turn(
             "provider_request_budget_exhausted",
             "provider_request_too_large",
             "current_turn_context_exhausted",
+            # A budget-refused turn never reached the model, so the user
+            # message persisted ahead of the run would otherwise linger as a
+            # reply-less turn and feed back into later context.
+            "budget_exceeded",
         }:
             message_id = getattr(run, "persisted_user_message_id", None)
             remove_message = getattr(session_manager, "remove_message", None)
@@ -1379,6 +1386,9 @@ async def build_services(
     session_db_path: str = ":memory:",
     extra_agent_ids: list[str] | None = None,
     seed_agent_workspaces: bool = True,
+    turn_hooks: Sequence[Any] | None = None,
+    compaction_hooks: Sequence[Any] | None = None,
+    tool_hooks: Sequence[Any] | None = None,
 ) -> ServiceContainer:
     """Initialize reusable services without any gateway-specific side effects.
 
@@ -1484,6 +1494,12 @@ async def build_services(
 
     set_session_manager(session_manager)
     _set_sessions_gateway_config(config)
+
+    from agentos.tools.builtin.projects import (
+        set_session_manager as _set_projects_session_manager,
+    )
+
+    _set_projects_session_manager(session_manager)
     session_storage = get_session_storage(session_manager)
 
     # Wire agent registry into the agents_list tool surface.
@@ -1788,10 +1804,27 @@ async def build_services(
         log.warning("build_services.cron_scheduler_failed", error=str(e))
 
     # ── Usage tracker ───────────────────────────────────────────────
+    # The spend ledger that budget ceilings read lives in its own state file,
+    # not in the session DB: it is written synchronously from the turn hot
+    # path, and sharing a file with the session store's async writer would put
+    # every ledger commit behind that write lock on the event loop. An
+    # in-memory session DB (CLI standalone / tests) means no durable state
+    # directory is in play, so the tracker stays in-memory too.
     if usage_tracker is None:
+        ledger_db_path: str | None = None
+        if session_db_path != ":memory:":
+            ledger_db = _state_path(config, "spend_ledger.db")
+            try:
+                ledger_db.parent.mkdir(parents=True, exist_ok=True)
+                ledger_db_path = str(ledger_db)
+            except OSError as e:
+                # A ledger we cannot create must not stop the gateway; budgets
+                # fall back to in-process accounting for this run.
+                log.warning("build_services.spend_ledger_unavailable", error=str(e))
         usage_tracker = _UsageTracker(
             default_provider_id=config.llm.provider,
             db_path=session_db_path,
+            ledger_db_path=ledger_db_path,
         )
 
     # ── Auxiliary LLM client (needs the tracker above to bill side tasks) ──
@@ -1875,6 +1908,9 @@ async def build_services(
         memory_retrievers=memory_retrievers,
         turn_capture_services=turn_capture_services,
         memory_provider_managers=memory_provider_managers,
+        turn_hooks=turn_hooks,
+        compaction_hooks=compaction_hooks,
+        tool_hooks=tool_hooks,
     )
     # Attach deferred callback ref so start_gateway_server can wire TurnRunner
     svc._turn_runner_ref = _turn_runner_ref  # type: ignore[attr-defined]
@@ -1921,13 +1957,11 @@ def build_turn_runner_from_services(
         memory_provider_managers=getattr(svc, "memory_provider_managers", None) or None,
         session_lock_provider=_standalone_lock_provider,
         diagnostics_state=diagnostics_state,
-        # Hook registries forwarded from services when present so any future
-        # user-registered TurnHook / CompactionHook instance flows through to
-        # TurnRunner without another boot edit.
-        # None today (no production services expose either registry); the
-        # plumbing stays here so the path is wired end-to-end.
+        # Hook registries forwarded from services when present so any user-registered
+        # TurnHook / CompactionHook / ToolHook instance flows through to TurnRunner.
         turn_hooks=getattr(svc, "turn_hooks", None),
         compaction_hooks=getattr(svc, "compaction_hooks", None),
+        tool_hooks=getattr(svc, "tool_hooks", None),
     )
 
 
@@ -1941,6 +1975,9 @@ async def start_gateway_server(
     channel_manager: Any = None,
     usage_tracker: Any = None,
     run: bool = True,
+    turn_hooks: Sequence[Any] | None = None,
+    compaction_hooks: Sequence[Any] | None = None,
+    tool_hooks: Sequence[Any] | None = None,
 ) -> GatewayServer:
     """
     Boot sequence:
@@ -2017,6 +2054,9 @@ async def start_gateway_server(
         tool_registry=tool_registry,
         usage_tracker=usage_tracker,
         session_db_path=str(_state_path(config, "sessions.db")),
+        turn_hooks=turn_hooks,
+        compaction_hooks=compaction_hooks,
+        tool_hooks=tool_hooks,
     )
 
     # Record boot time for uptime calculation (gateway-specific)

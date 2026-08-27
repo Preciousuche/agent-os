@@ -750,7 +750,13 @@ async def _handle_sessions_list(params: dict | None, ctx: RpcContext) -> dict:
         return {"sessions": [], "count": 0, "ts": now_ms}
 
     limit = (params or {}).get("limit", 50)
-    sessions = await storage.list_sessions(limit=limit)
+    project_filter = (params or {}).get("projectId") or (params or {}).get("project_id")
+    if project_filter:
+        sessions = await storage.list_sessions(limit=limit, project_id=str(project_filter))
+    else:
+        # No kwarg on the unfiltered path: storage stand-ins with a narrower
+        # list_sessions() signature keep working when no filter is requested.
+        sessions = await storage.list_sessions(limit=limit)
     task_rows_by_session = await _list_task_rows_by_session(
         ctx,
         storage,
@@ -801,6 +807,8 @@ async def _handle_sessions_list(params: dict | None, ctx: RpcContext) -> dict:
             "group_id": getattr(s, "group_id", None),
             "groupId": getattr(s, "group_id", None),
             "subject": getattr(s, "subject", None),
+            "project_id": getattr(s, "project_id", None),
+            "projectId": getattr(s, "project_id", None),
             "last_channel": getattr(s, "last_channel", None),
             "lastChannel": getattr(s, "last_channel", None),
             "last_to": getattr(s, "last_to", None),
@@ -837,8 +845,11 @@ async def _handle_sessions_create(params: dict | None, ctx: RpcContext) -> dict:
     message = params.get("message")
     model = _model_value(params.get("model")) or _agent_registry_model(ctx, agent_id)
     kind = params.get("kind") or params.get("sessionKind")
+    project_id = params.get("projectId") or params.get("project_id")
     if message is not None and not isinstance(message, str):
         raise ValueError("params.message must be a string")
+    if project_id is not None and not isinstance(project_id, str):
+        raise ValueError("params.projectId must be a string")
 
     if not await _agent_registry_has(ctx, agent_id):
         raise RpcHandlerError(
@@ -857,13 +868,28 @@ async def _handle_sessions_create(params: dict | None, ctx: RpcContext) -> dict:
             "note": "session manager not available",
         }
 
-    session = await ctx.session_manager.create(
-        session_key=_create_session_key(agent_id, kind),
-        agent_id=agent_id,
-        display_name=display_name,
-        model=model,
-    )
+    create_kwargs: dict[str, Any] = {}
+    if project_id:
+        # Only pass the kwarg when set: session-manager stand-ins with a
+        # narrower create() signature keep working for project-less creates.
+        create_kwargs["project_id"] = project_id
+    try:
+        session = await ctx.session_manager.create(
+            session_key=_create_session_key(agent_id, kind),
+            agent_id=agent_id,
+            display_name=display_name,
+            model=model,
+            **create_kwargs,
+        )
+    except KeyError as exc:
+        raise RpcHandlerError(
+            "project.not_found",
+            f"Project '{project_id}' does not exist",
+            details={"projectId": project_id},
+        ) from exc
     result = {"key": session.session_key, "sessionId": session.session_id}
+    if project_id:
+        result["projectId"] = project_id
 
     if message:
         _persisted = await ctx.session_manager.append_message(
@@ -1490,6 +1516,35 @@ async def _handle_sessions_patch(params: dict | None, ctx: RpcContext) -> dict:
                 value = normalize_session_name(value)
             update_values[attr] = value
             updated_fields.append(field)
+
+    # Project moves route through the manager's validation choke point
+    # (project must exist and belong to the session's agent). An explicit
+    # null detaches; an absent field is untouched.
+    if "projectId" in params or "project_id" in params:
+        raw_project = params.get("projectId", params.get("project_id"))
+        if raw_project is not None and not isinstance(raw_project, str):
+            raise ValueError("params.projectId must be a string or null")
+        move = getattr(ctx.session_manager, "move_session_to_project", None)
+        if move is None:
+            raise RpcHandlerError(
+                "sessions.patch_unsupported",
+                "Session manager cannot move sessions between projects",
+            )
+        try:
+            await move(key, raw_project)
+        except KeyError as exc:
+            raise RpcHandlerError(
+                "project.not_found",
+                f"Project '{raw_project}' does not exist",
+                details={"projectId": raw_project},
+            ) from exc
+        updated_fields.append("projectId")
+        await _emit_to_subscribers(
+            ctx,
+            key,
+            "sessions.changed",
+            build_sessions_changed_payload(key, "project_moved", project_id=raw_project),
+        )
 
     if update_values:
         update = getattr(ctx.session_manager, "update", None)
@@ -2334,6 +2389,8 @@ async def _handle_sessions_resolve(params: dict | None, ctx: RpcContext) -> dict
         "model": getattr(session, "model", None),
         "display_name": getattr(session, "display_name", None),
         "displayName": getattr(session, "display_name", None),
+        "project_id": getattr(session, "project_id", None),
+        "projectId": getattr(session, "project_id", None),
         "router_hold_tier": _router_hold_tier_for_session(ctx, session.session_key),
         "created_at": session.created_at,
         "updated_at": session.updated_at,

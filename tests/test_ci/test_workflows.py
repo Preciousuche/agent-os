@@ -12,6 +12,7 @@ import yaml
 
 WORKFLOW_DIR = Path(".github/workflows")
 CLASSIFIER = Path(".github/scripts/classify-ci-changes.sh")
+LISTER = ".github/scripts/list-ci-changed-files.sh"
 TEST_PATH_RE = re.compile(r"tests/[A-Za-z0-9_./-]+\.py")
 
 
@@ -121,7 +122,7 @@ def test_default_ci_blocks_pull_requests_and_main_and_dev_pushes() -> None:
     assert "Windows compatibility tests" in text
     assert "Release packaging contracts" in text
     assert "CI result" in text
-    assert 'push)\n              printf \'.ci/run-all\\n\' > "${changed_files}"' in text
+    assert LISTER in text
     assert "runtime_changed" in text
     assert "test_changed" in text
     assert "ci_changed" in text
@@ -577,3 +578,160 @@ def test_release_hydration_checks_guard_pilot_v1_bundle() -> None:
         assert "pilot_v1" in text
         assert "model.onnx" in text
         assert "manifest.json" in text
+
+
+def _git(repo: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    return result.stdout.strip()
+
+
+def _repo_with_two_commits(tmp_path: Path) -> tuple[Path, str, str]:
+    """Build a throwaway repo and return ``(path, base_sha, head_sha)``."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "ci@example.test")
+    _git(repo, "config", "user.name", "CI Test")
+
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-qm", "base")
+    base_sha = _git(repo, "rev-parse", "HEAD")
+
+    (repo / "src").mkdir()
+    (repo / "src" / "thing.py").write_text("x = 1\n", encoding="utf-8")
+    _git(repo, "add", "src/thing.py")
+    _git(repo, "commit", "-qm", "head")
+    head_sha = _git(repo, "rev-parse", "HEAD")
+
+    return repo, base_sha, head_sha
+
+
+def _list_changed_files(
+    repo: Path,
+    tmp_path: Path,
+    *,
+    event_name: str,
+    base_sha: str = "",
+    head_sha: str = "",
+) -> tuple[list[str], subprocess.CompletedProcess[str]]:
+    changed_file = tmp_path / "changed-files.txt"
+    lister = Path(LISTER).resolve()
+
+    result = subprocess.run(
+        [
+            _bash_executable(),
+            lister.as_posix(),
+            event_name,
+            base_sha,
+            head_sha,
+            changed_file.as_posix(),
+        ],
+        cwd=repo,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    if not changed_file.exists():
+        return [], result
+    listed = [line for line in changed_file.read_text(encoding="utf-8").splitlines() if line]
+    return listed, result
+
+
+def test_changed_file_lister_diffs_a_pull_request_range(tmp_path: Path) -> None:
+    repo, base_sha, head_sha = _repo_with_two_commits(tmp_path)
+
+    listed, result = _list_changed_files(
+        repo,
+        tmp_path,
+        event_name="pull_request",
+        base_sha=base_sha,
+        head_sha=head_sha,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert listed == ["src/thing.py"]
+
+
+def test_changed_file_lister_runs_everything_for_a_push(tmp_path: Path) -> None:
+    repo, _base_sha, _head_sha = _repo_with_two_commits(tmp_path)
+
+    listed, result = _list_changed_files(repo, tmp_path, event_name="push")
+
+    assert result.returncode == 0, result.stderr
+    assert listed == [".ci/run-all"]
+
+
+def test_changed_file_lister_runs_everything_when_the_head_sha_is_unreachable(
+    tmp_path: Path,
+) -> None:
+    """A head sha that is not in the object DB must not hard-fail the pipeline.
+
+    Reproduces CI run #830: a fork PR whose workflow was released only after the
+    PR had been merged. ``refs/pull/<n>/merge`` was already gone, so
+    ``actions/checkout`` silently fell back to ``origin/main`` and the head sha
+    lived only in the contributor's fork. ``git diff`` then exited 128 with
+    ``fatal: bad object`` and failed CI on a classification step.
+    """
+    repo, base_sha, _head_sha = _repo_with_two_commits(tmp_path)
+    missing_sha = "da1445ade0d8d94a55002a298d5bcb2e78baaca3"
+
+    listed, result = _list_changed_files(
+        repo,
+        tmp_path,
+        event_name="pull_request",
+        base_sha=base_sha,
+        head_sha=missing_sha,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert listed == [".ci/run-all"]
+
+
+def test_changed_file_lister_runs_everything_when_the_base_sha_is_unreachable(
+    tmp_path: Path,
+) -> None:
+    repo, _base_sha, head_sha = _repo_with_two_commits(tmp_path)
+    missing_sha = "0000000000000000000000000000000000000001"
+
+    listed, result = _list_changed_files(
+        repo,
+        tmp_path,
+        event_name="pull_request",
+        base_sha=missing_sha,
+        head_sha=head_sha,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert listed == [".ci/run-all"]
+
+
+def test_changed_file_lister_runs_everything_when_a_pull_request_sha_is_blank(
+    tmp_path: Path,
+) -> None:
+    repo, _base_sha, head_sha = _repo_with_two_commits(tmp_path)
+
+    listed, result = _list_changed_files(
+        repo,
+        tmp_path,
+        event_name="pull_request",
+        base_sha="",
+        head_sha=head_sha,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert listed == [".ci/run-all"]
+
+
+def test_ci_lists_changed_files_through_the_shared_script() -> None:
+    """ci.yml must not inline an unguarded ``git diff`` of the PR range."""
+    text = (WORKFLOW_DIR / "ci.yml").read_text(encoding="utf-8")
+
+    assert LISTER in text
+    assert "git diff --name-only" not in text

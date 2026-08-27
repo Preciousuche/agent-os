@@ -563,6 +563,7 @@ class _TurnRunnerAgentFactoryAdapter(AgentFactoryPort):
             memory_sync_manager=memory_sync_manager,
             tool_registry=self._runner._tool_registry,
             tool_context=tool_context,
+            spend_budget_guard=self._runner._check_spend_budget,
         )
 
 

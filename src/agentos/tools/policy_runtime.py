@@ -18,6 +18,9 @@ _SESSION_READ_TOOL_NAMES: frozenset[str] = frozenset(
 _SESSION_RUNTIME_TOOL_NAMES: frozenset[str] = frozenset(
     {"sessions_send", "sessions_spawn", "sessions_yield"}
 )
+_PROJECT_TOOL_NAMES: frozenset[str] = frozenset(
+    {"projects_create", "projects_list", "projects_update", "projects_move_session"}
+)
 _CHANNEL_RUNTIME_TOOL_NAMES: frozenset[str] = frozenset({"message"})
 _INTERACTIVE_RUNTIME_TOOL_NAMES: frozenset[str] = frozenset({"agents_list", "subagents"})
 # Tools that need a human on the other end to answer, not an approval
@@ -149,7 +152,9 @@ def resolve_runtime_tool_surface(
     if not caps.browser:
         denied_tools |= set(_BROWSER_TOOL_NAMES)
     if not caps.session_manager:
-        denied_tools |= set(_SESSION_READ_TOOL_NAMES | _SESSION_RUNTIME_TOOL_NAMES)
+        denied_tools |= set(
+            _SESSION_READ_TOOL_NAMES | _SESSION_RUNTIME_TOOL_NAMES | _PROJECT_TOOL_NAMES
+        )
     if not caps.task_runtime:
         denied_tools |= set(_SESSION_RUNTIME_TOOL_NAMES)
     if not caps.scheduler:

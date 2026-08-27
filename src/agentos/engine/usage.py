@@ -48,6 +48,19 @@ def parse_session_key_scope(session_key: str) -> tuple[str, str]:
     return agent_id, channel
 
 
+def _scope_ceiling(config: Any, field: str, scope_id: str) -> float | None:
+    """Read one per-scope ceiling from a budgets config, tolerating absence.
+
+    ``config`` is typed loosely because the engine must not import gateway
+    config; anything exposing the documented ``[budgets]`` field names works.
+    """
+    mapping = getattr(config, field, None)
+    if not isinstance(mapping, dict):
+        return None
+    amount = mapping.get(scope_id)
+    return float(amount) if amount is not None else None
+
+
 _current_usage_scope: ContextVar[str | None] = ContextVar(
     "agentos_usage_scope",
     default=None,
@@ -364,24 +377,68 @@ _global_usage_tracker: UsageTracker | None = None
 class UsageTracker:
     """Tracks per-session token usage and cost with database persistence and budgets."""
 
-    def __init__(self, default_provider_id: str = "", db_path: str | None = None) -> None:
+    def __init__(
+        self,
+        default_provider_id: str = "",
+        db_path: str | None = None,
+        *,
+        ledger_db_path: str | None = None,
+    ) -> None:
+        """
+        ``db_path`` backs the detailed ``usage_records`` history.
+
+        ``ledger_db_path`` backs the spend ledger that budget ceilings read.
+        It is deliberately a *separate* file from the session database: the
+        ledger is written synchronously from the turn hot path, and sharing a
+        file with the session store's async writer would make every ledger
+        commit contend for that write lock on the event loop. The tracker owns
+        this file's schema outright, so it is also not a second schema owner
+        inside a migration-managed database.
+        """
         global _global_usage_tracker
         self._sessions: dict[str, SessionUsage] = {}
         self._scopes: dict[tuple[str, str], SessionUsage] = {}
         self._default_provider_id = str(default_provider_id or "").strip().lower()
         self._db_path = db_path
+        self._ledger_db_path = ledger_db_path
         self._session_metadata: dict[str, tuple[str, str]] = {}
         self._warned_keys: set[str] = set()
+        # In-process mirror of the persisted ledger. Reads take the larger of
+        # the two: a dropped write (sqlite busy, disk full) must not be able to
+        # under-report spend and silently retire a ceiling.
+        self._daily_spend: dict[tuple[str, str, str], float] = {}
+        self._daily_spend_day = ""
+        self._session_spend: dict[str, float] = {}
         self._session_active_skill: dict[str, str] = {}
         _global_usage_tracker = self
 
         if self._db_path:
             self._init_db()
+        if self._ledger_db_path:
+            self._init_ledger_db()
 
-    def _init_db(self) -> None:
-        if not self._db_path:
+    def _connect(self, path: str) -> sqlite3.Connection:
+        """Open a short-lived connection tuned for hot-path writes.
+
+        WAL keeps readers off the write lock and ``synchronous=NORMAL`` drops
+        the per-commit fsync, so a ledger write costs well under a
+        millisecond. ``busy_timeout`` is deliberately short: this runs on the
+        event loop, and blocking every session for seconds to record a cost
+        row is worse than dropping the row (the in-process mirror covers it).
+        """
+        conn = sqlite3.connect(path, timeout=0.25)
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA busy_timeout=250")
+        except Exception as e:  # noqa: BLE001 - pragmas are best-effort
+            log.warning("usage_tracker.pragma_failed", error=str(e))
+        return conn
+
+    def _init_ledger_db(self) -> None:
+        if not self._ledger_db_path:
             return
-        conn = sqlite3.connect(self._db_path)
+        conn = self._connect(self._ledger_db_path)
         try:
             with conn:
                 conn.execute(
@@ -395,6 +452,25 @@ class UsageTracker:
                     )
                     """
                 )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS session_spend (
+                        session_key TEXT PRIMARY KEY,
+                        cost_usd REAL NOT NULL DEFAULT 0.0
+                    )
+                    """
+                )
+        except Exception as e:
+            log.warning("usage_tracker.ledger_init_failed", error=str(e))
+        finally:
+            conn.close()
+
+    def _init_db(self) -> None:
+        if not self._db_path:
+            return
+        conn = sqlite3.connect(self._db_path)
+        try:
+            with conn:
                 conn.execute(
                     """
                     CREATE TABLE IF NOT EXISTS usage_records (
@@ -421,32 +497,37 @@ class UsageTracker:
         finally:
             conn.close()
 
-    def _update_spend_ledger(
+    def _bump_daily_mirror(
         self, day: str, scope_kind: str, scope_id: str, incremental_cost: float
     ) -> None:
-        if not self._db_path or incremental_cost <= 0.0:
+        """Accumulate one scope's spend in the in-process ledger mirror."""
+        if incremental_cost <= 0.0:
             return
-        conn = sqlite3.connect(self._db_path)
-        try:
-            with conn:
-                conn.execute(
-                    """
-                    INSERT INTO spend_ledger (day, scope_kind, scope_id, cost_usd)
-                    VALUES (?, ?, ?, ?)
-                    ON CONFLICT(day, scope_kind, scope_id) DO UPDATE SET
-                        cost_usd = cost_usd + excluded.cost_usd
-                    """,
-                    (day, scope_kind, scope_id, incremental_cost),
-                )
-        except Exception as e:
-            log.warning("usage_tracker.db_update_failed", error=str(e))
-        finally:
-            conn.close()
+        if day != self._daily_spend_day:
+            # Day rolled over. Yesterday's mirror can never be read again
+            # (every lookup is keyed by the current UTC day), so drop it
+            # rather than let a long-lived gateway accumulate one entry per
+            # scope per day forever. The warn-once bookkeeping is dropped with
+            # it: daily keys are dead, and a session that spans midnight is
+            # worth re-warning about once on the new day.
+            self._daily_spend.clear()
+            self._warned_keys.clear()
+            self._daily_spend_day = day
+        ledger_key = (day, scope_kind, scope_id)
+        self._daily_spend[ledger_key] = self._daily_spend.get(ledger_key, 0.0) + incremental_cost
 
     def get_spend(self, day: str, scope_kind: str, scope_id: str) -> float:
-        if not self._db_path:
-            return 0.0
-        conn = sqlite3.connect(self._db_path)
+        """Return accumulated spend for one ledger scope on one UTC day.
+
+        The persisted row and the in-process mirror are reconciled by taking
+        the larger of the two. They diverge only when a write was dropped, and
+        in that direction the persisted row under-reports — which would retire
+        a ceiling rather than enforce it.
+        """
+        mirror = self._daily_spend.get((day, scope_kind, scope_id), 0.0)
+        if not self._ledger_db_path:
+            return mirror
+        conn = self._connect(self._ledger_db_path)
         try:
             cursor = conn.cursor()
             cursor.execute(
@@ -455,35 +536,47 @@ class UsageTracker:
                 (day, scope_kind, scope_id),
             )
             row = cursor.fetchone()
-            return row[0] if row else 0.0
+            return max(mirror, float(row[0])) if row else mirror
         except Exception as e:
-            log.warning("usage_tracker.db_query_failed", error=str(e))
-            return 0.0
+            log.warning("usage_tracker.ledger_query_failed", error=str(e))
+            return mirror
         finally:
             conn.close()
 
     def get_session_db_cost(self, session_key: str) -> float:
-        if not self._db_path:
+        """Return the persisted lifetime cost recorded for one session."""
+        if not self._ledger_db_path:
             return 0.0
-        conn = sqlite3.connect(self._db_path)
+        conn = self._connect(self._ledger_db_path)
         try:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT total_cost_usd FROM sessions WHERE session_key = ?",
+                "SELECT cost_usd FROM session_spend WHERE session_key = ?",
                 (session_key,),
             )
             row = cursor.fetchone()
-            return row[0] if row else 0.0
-        except Exception:
+            return float(row[0]) if row else 0.0
+        except Exception as e:
+            log.warning("usage_tracker.session_spend_query_failed", error=str(e))
             return 0.0
         finally:
             conn.close()
 
     def get_effective_session_cost(self, session_key: str) -> float:
+        """Best known lifetime cost for a session.
+
+        The in-process total covers only what this process has seen. After a
+        restart a resumed session starts from zero in memory while the ledger
+        still holds what it spent before, so a session ceiling must compare
+        against the larger of the two — otherwise a crash-and-respawn hands
+        the session a fresh allowance.
+        """
+        persisted = self._session_spend.get(session_key)
+        if persisted is None:
+            persisted = self.get_session_db_cost(session_key)
         mem_usage = self._sessions.get(session_key)
-        if mem_usage is not None:
-            return mem_usage.total_cost
-        return self.get_session_db_cost(session_key)
+        in_memory = mem_usage.total_cost if mem_usage is not None else 0.0
+        return max(in_memory, persisted)
 
     def get_session_scope(self, session_key: str) -> tuple[str, str]:
         meta = self._session_metadata.get(session_key)
@@ -493,122 +586,115 @@ class UsageTracker:
         return meta
 
     def check_budget_limits(self, session_key: str, config: Any) -> tuple[bool, str | None]:
-        """Check budget limits and return (exceeded_hard_stop, alert_message)."""
-        if config is None:
+        """Evaluate every configured spend ceiling for ``session_key``.
+
+        Returns ``(hard_stop, message)``. ``hard_stop`` True means the caller
+        must refuse the work; ``message`` carries operator-facing text for
+        either that refusal or — with ``hard_stop`` False — a one-shot warning.
+
+        Hard stops are evaluated across all scopes before warnings, so a
+        breached ceiling is never masked by a warning from an earlier scope.
+        Warnings fire at most once per scope per day/session so a long-running
+        session does not repeat the same alert on every turn.
+        """
+        if config is None or not getattr(config, "enabled", True):
             return False, None
 
         agent_id, channel = self.get_session_scope(session_key)
         day = datetime.now(UTC).strftime("%Y-%m-%d")
 
-        # 1. Session cost check
-        sess_cost = self.get_effective_session_cost(session_key)
-        if config.session_limit is not None and sess_cost >= config.session_limit:
-            return (
-                True,
-                f"Session cost ${sess_cost:,.4f} exceeds limit of ${config.session_limit:,.4f}.",
-            )
-        if config.session_warn is not None and sess_cost >= config.session_warn:
-            warn_key = f"{session_key}:session_warn"
-            if warn_key not in self._warned_keys:
-                self._warned_keys.add(warn_key)
-                log.warning(
-                    "budget.session_warning",
-                    session_key=session_key,
-                    cost=sess_cost,
-                    limit=config.session_warn,
-                )
-                return (
-                    False,
-                    (
-                        f"Session cost ${sess_cost:,.4f} exceeds warning threshold "
-                        f"of ${config.session_warn:,.4f}."
-                    ),
-                )
+        # (log_event, label, warn_key, spend, limit, warn). Spend is only read
+        # for scopes that actually have a ceiling configured, so the default
+        # all-None config costs four dict lookups and no SQLite queries.
+        checks: list[tuple[str, str, str, float, float | None, float | None]] = []
 
-        # 2. Daily global cost check
-        daily_cost = self.get_spend(day, "gateway", "global")
-        if config.daily_limit is not None and daily_cost >= config.daily_limit:
-            return (
-                True,
+        session_limit = getattr(config, "session_limit", None)
+        session_warn = getattr(config, "session_warn", None)
+        if session_limit is not None or session_warn is not None:
+            checks.append(
                 (
-                    f"Daily global cost ${daily_cost:,.4f} exceeds limit "
-                    f"of ${config.daily_limit:,.4f}."
-                ),
+                    "session",
+                    "Session cost",
+                    f"session:{session_key}",
+                    self.get_effective_session_cost(session_key),
+                    session_limit,
+                    session_warn,
+                )
             )
-        if config.daily_warn is not None and daily_cost >= config.daily_warn:
-            warn_key = f"{day}:daily_warn"
-            if warn_key not in self._warned_keys:
-                self._warned_keys.add(warn_key)
-                log.warning("budget.daily_warning", cost=daily_cost, limit=config.daily_warn)
-                return (
-                    False,
-                    (
-                        f"Daily global cost ${daily_cost:,.4f} exceeds warning threshold "
-                        f"of ${config.daily_warn:,.4f}."
-                    ),
-                )
 
-        # 3. Agent daily cost check
-        agent_limit = config.agent_daily_limit.get(agent_id)
-        agent_warn = config.agent_daily_warn.get(agent_id)
+        daily_limit = getattr(config, "daily_limit", None)
+        daily_warn = getattr(config, "daily_warn", None)
+        if daily_limit is not None or daily_warn is not None:
+            checks.append(
+                (
+                    "daily",
+                    "Daily gateway cost",
+                    f"daily:{day}",
+                    self.get_spend(day, "gateway", "global"),
+                    daily_limit,
+                    daily_warn,
+                )
+            )
+
+        agent_limit = _scope_ceiling(config, "agent_daily_limit", agent_id)
+        agent_warn = _scope_ceiling(config, "agent_daily_warn", agent_id)
         if agent_limit is not None or agent_warn is not None:
-            agent_cost = self.get_spend(day, "agent", agent_id)
-            if agent_limit is not None and agent_cost >= agent_limit:
-                return (
-                    True,
-                    (
-                        f"Daily cost for agent '{agent_id}' (${agent_cost:,.4f}) "
-                        f"exceeds limit of ${agent_limit:,.4f}."
-                    ),
+            checks.append(
+                (
+                    "agent_daily",
+                    f"Daily cost for agent '{agent_id}'",
+                    f"agent:{day}:{agent_id}",
+                    self.get_spend(day, "agent", agent_id),
+                    agent_limit,
+                    agent_warn,
                 )
-            if agent_warn is not None and agent_cost >= agent_warn:
-                warn_key = f"{day}:agent_warn:{agent_id}"
-                if warn_key not in self._warned_keys:
-                    self._warned_keys.add(warn_key)
-                    log.warning(
-                        "budget.agent_warning",
-                        agent_id=agent_id,
-                        cost=agent_cost,
-                        limit=agent_warn,
-                    )
-                    return (
-                        False,
-                        (
-                            f"Daily cost for agent '{agent_id}' (${agent_cost:,.4f}) "
-                            f"exceeds warning threshold of ${agent_warn:,.4f}."
-                        ),
-                    )
+            )
 
-        # 4. Channel daily cost check
-        channel_limit = config.channel_daily_limit.get(channel)
-        channel_warn = config.channel_daily_warn.get(channel)
+        channel_limit = _scope_ceiling(config, "channel_daily_limit", channel)
+        channel_warn = _scope_ceiling(config, "channel_daily_warn", channel)
         if channel_limit is not None or channel_warn is not None:
-            channel_cost = self.get_spend(day, "channel", channel)
-            if channel_limit is not None and channel_cost >= channel_limit:
+            checks.append(
+                (
+                    "channel_daily",
+                    f"Daily cost for channel '{channel}'",
+                    f"channel:{day}:{channel}",
+                    self.get_spend(day, "channel", channel),
+                    channel_limit,
+                    channel_warn,
+                )
+            )
+
+        for scope, label, _warn_key, spend, limit, _warn in checks:
+            if limit is not None and spend >= limit:
+                log.warning(
+                    "budget.limit_exceeded",
+                    scope=scope,
+                    session_key=session_key,
+                    spend=spend,
+                    limit=limit,
+                )
                 return (
                     True,
-                    (
-                        f"Daily cost for channel '{channel}' (${channel_cost:,.4f}) "
-                        f"exceeds limit of ${channel_limit:,.4f}."
-                    ),
+                    f"{label} ${spend:,.4f} has reached the ${limit:,.4f} budget limit.",
                 )
-            if channel_warn is not None and channel_cost >= channel_warn:
-                warn_key = f"{day}:channel_warn:{channel}"
-                if warn_key not in self._warned_keys:
-                    self._warned_keys.add(warn_key)
-                    log.warning(
-                        "budget.channel_warning",
-                        channel=channel,
-                        cost=channel_cost,
-                        limit=channel_warn,
-                    )
-                    return (
-                        False,
-                        (
-                            f"Daily cost for channel '{channel}' (${channel_cost:,.4f}) "
-                            f"exceeds warning threshold of ${channel_warn:,.4f}."
-                        ),
-                    )
+
+        for scope, label, warn_key, spend, _limit, warn in checks:
+            if warn is None or spend < warn:
+                continue
+            if warn_key in self._warned_keys:
+                continue
+            self._warned_keys.add(warn_key)
+            log.warning(
+                "budget.warning",
+                scope=scope,
+                session_key=session_key,
+                spend=spend,
+                threshold=warn,
+            )
+            return (
+                False,
+                f"{label} ${spend:,.4f} has reached the ${warn:,.4f} budget warning threshold.",
+            )
 
         return False, None
 
@@ -669,60 +755,115 @@ class UsageTracker:
         )
         effective_cost = billed_cost if billed_cost > 0.0 else cost
 
-        # Persistence to Daily Ledger & usage records
-        if self._db_path:
-            agent_id, channel = self.get_session_scope(session_key)
-            day = datetime.now(UTC).strftime("%Y-%m-%d")
-            if effective_cost > 0.0:
-                self._update_spend_ledger(day, "gateway", "global", effective_cost)
-                self._update_spend_ledger(day, "agent", agent_id, effective_cost)
-                self._update_spend_ledger(day, "channel", channel, effective_cost)
+        # Spend ledger — mirrored in memory with or without a DB so budget
+        # ceilings apply to an in-memory tracker too.
+        agent_id, channel = self.get_session_scope(session_key)
+        day = datetime.now(UTC).strftime("%Y-%m-%d")
+        ledger_scopes = (("gateway", "global"), ("agent", agent_id), ("channel", channel))
+        if effective_cost > 0.0:
+            for scope_kind, scope_id in ledger_scopes:
+                self._bump_daily_mirror(day, scope_kind, scope_id, effective_cost)
+            if session_key not in self._session_spend:
+                # Seed from the ledger so a session resumed after a restart
+                # keeps counting from what it already spent.
+                self._session_spend[session_key] = self.get_session_db_cost(session_key)
+            self._session_spend[session_key] += effective_cost
+            self._persist_ledger(day, ledger_scopes, session_key, effective_cost)
 
-            # Record detailed usage row
-            tool_name = _current_tool_name.get()
-            scope_key = _current_usage_scope.get()
-            if not tool_name and scope_key:
-                tool_name = scope_key
+        if not self._db_path:
+            return
 
-            skill = _current_skill_name.get()
-            if not skill:
-                skill = self._session_active_skill.get(session_key)
+        tool_name = _current_tool_name.get()
+        scope_key = _current_usage_scope.get()
+        if not tool_name and scope_key:
+            tool_name = scope_key
 
-            created_at = int(time.time() * 1000)
+        skill = _current_skill_name.get()
+        if not skill:
+            skill = self._session_active_skill.get(session_key)
 
-            conn = sqlite3.connect(self._db_path)
-            try:
-                with conn:
-                    conn.execute(
-                        """
-                        INSERT INTO usage_records (
-                            session_key, agent_id, channel_type, tool_name, skill,
-                            model, provider, input_tokens, output_tokens,
-                            cache_read_tokens, cache_write_tokens, cost_usd, billed_cost_usd,
-                            created_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            session_key,
-                            agent_id,
-                            channel,
-                            tool_name,
-                            skill,
-                            model_id,
-                            effective_provider_id,
-                            input_tokens,
-                            output_tokens,
-                            cache_read_tokens,
-                            cache_write_tokens,
-                            cost,
-                            billed_cost,
-                            created_at,
-                        ),
-                    )
-            except Exception as e:
-                log.warning("usage_tracker.insert_usage_record_failed", error=str(e))
-            finally:
-                conn.close()
+        created_at = int(time.time() * 1000)
+
+        conn = self._connect(self._db_path)
+        try:
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO usage_records (
+                        session_key, agent_id, channel_type, tool_name, skill,
+                        model, provider, input_tokens, output_tokens,
+                        cache_read_tokens, cache_write_tokens, cost_usd, billed_cost_usd,
+                        created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        session_key,
+                        agent_id,
+                        channel,
+                        tool_name,
+                        skill,
+                        model_id,
+                        effective_provider_id,
+                        input_tokens,
+                        output_tokens,
+                        cache_read_tokens,
+                        cache_write_tokens,
+                        cost,
+                        billed_cost,
+                        created_at,
+                    ),
+                )
+        except Exception as e:
+            log.warning("usage_tracker.insert_usage_record_failed", error=str(e))
+        finally:
+            conn.close()
+
+    def _persist_ledger(
+        self,
+        day: str,
+        ledger_scopes: tuple[tuple[str, str], ...],
+        session_key: str,
+        incremental_cost: float,
+    ) -> None:
+        """Write one turn's spend into the durable ledger.
+
+        All four upserts share one connection and one transaction: this runs
+        on the turn hot path and sqlite3 is synchronous, so every extra
+        connect/commit is event-loop time. A failure here is logged and
+        swallowed — the in-process mirror still holds the spend, and
+        ``get_spend`` takes the larger of the two, so a dropped write costs
+        durability across a restart but never retires a live ceiling.
+        """
+        if not self._ledger_db_path:
+            return
+        conn = self._connect(self._ledger_db_path)
+        try:
+            with conn:
+                conn.executemany(
+                    """
+                    INSERT INTO spend_ledger (day, scope_kind, scope_id, cost_usd)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(day, scope_kind, scope_id) DO UPDATE SET
+                        cost_usd = cost_usd + excluded.cost_usd
+                    """,
+                    [
+                        (day, scope_kind, scope_id, incremental_cost)
+                        for scope_kind, scope_id in ledger_scopes
+                    ],
+                )
+                conn.execute(
+                    """
+                    INSERT INTO session_spend (session_key, cost_usd)
+                    VALUES (?, ?)
+                    ON CONFLICT(session_key) DO UPDATE SET
+                        cost_usd = cost_usd + excluded.cost_usd
+                    """,
+                    (session_key, incremental_cost),
+                )
+        except Exception as e:
+            log.warning("usage_tracker.ledger_write_failed", error=str(e))
+        finally:
+            conn.close()
 
     def get(self, session_key: str) -> SessionUsage | None:
         """Return accumulated usage for a session, or None."""
@@ -833,15 +974,6 @@ class UsageTracker:
     def all_sessions(self) -> dict[str, SessionUsage]:
         """Return all tracked sessions."""
         return dict(self._sessions)
-
-    def check_warning(self, session_key: str, threshold: float = 5.0) -> str | None:
-        """Return a warning if session cost exceeds threshold, else None."""
-        usage = self._sessions.get(session_key)
-        if usage is None:
-            return None
-        if usage.cost >= threshold:
-            return f"Session cost ${usage.cost:,.2f} has exceeded the ${threshold:,.2f} threshold."
-        return None
 
     def query_usage(
         self,

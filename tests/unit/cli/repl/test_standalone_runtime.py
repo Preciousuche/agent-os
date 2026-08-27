@@ -97,7 +97,7 @@ async def test_standalone_runtime_mirrors_turn_model_update_to_legacy_scope(
     output = cast(TuiOutputHandle, object())
     captured: dict[str, Any] = {}
 
-    async def fake_build_services() -> _FakeServices:
+    async def fake_build_services(*args: Any, **kwargs: Any) -> _FakeServices:
         return services
 
     def fake_build_turn_runner_from_services(_services: object) -> object:
@@ -206,7 +206,7 @@ async def test_standalone_runtime_matches_exit_with_standalone_surface(
         surfaces.append(surface)
         return value == "/exit"
 
-    async def fake_build_services() -> _FakeServices:
+    async def fake_build_services(*args: Any, **kwargs: Any) -> _FakeServices:
         return _FakeServices()
 
     async def fake_run_concurrent_repl(

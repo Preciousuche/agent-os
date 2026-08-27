@@ -725,7 +725,7 @@ async def test_standalone_repl_forwards_timeout(monkeypatch) -> None:
     async def fake_prompt_user(prefix: str = "[you] ", **kwargs):
         return next(inputs)
 
-    async def fake_build_services() -> _FakeServices:
+    async def fake_build_services(*args, **kwargs) -> _FakeServices:
         return _FakeServices()
 
     monkeypatch.setattr("agentos.engine.runtime.TurnRunner", FakeTurnRunner)
@@ -765,7 +765,7 @@ async def test_standalone_chat_uses_workspace_in_tool_context(
     async def fake_prompt_user(prefix: str = "[you] ", **kwargs):
         return next(inputs)
 
-    async def fake_build_services() -> _FakeServices:
+    async def fake_build_services(*args, **kwargs) -> _FakeServices:
         return _FakeServices()
 
     monkeypatch.setattr("agentos.engine.runtime.TurnRunner", FakeTurnRunner)
@@ -806,7 +806,7 @@ async def test_standalone_path_command_runs_as_plain_message(
     async def fake_prompt_user(prefix: str = "[you] ", **kwargs):
         return next(inputs)
 
-    async def fake_build_services() -> _FakeServices:
+    async def fake_build_services(*args, **kwargs) -> _FakeServices:
         return _FakeServices()
 
     monkeypatch.setattr("agentos.engine.runtime.TurnRunner", FakeTurnRunner)
@@ -881,7 +881,7 @@ async def test_standalone_repl_wires_memory_services_into_turnrunner(monkeypatch
     async def fake_prompt_user(prefix: str = "[you] ", **kwargs):
         return next(inputs)
 
-    async def fake_build_services() -> _FakeServices:
+    async def fake_build_services(*args, **kwargs) -> _FakeServices:
         return services
 
     monkeypatch.setattr("agentos.engine.runtime.TurnRunner", FakeTurnRunner)
@@ -1084,7 +1084,7 @@ async def test_standalone_repl_uses_exact_slash_tokens(monkeypatch) -> None:
     async def fake_prompt_user(prefix: str = "[you] ", **kwargs):
         return next(inputs)
 
-    async def fake_build_services() -> _FakeServices:
+    async def fake_build_services(*args, **kwargs) -> _FakeServices:
         return services
 
     monkeypatch.setattr("agentos.engine.runtime.TurnRunner", FakeTurnRunner)
@@ -1123,7 +1123,7 @@ async def test_standalone_slash_compact_passes_provider_config(monkeypatch) -> N
     async def fake_prompt_user(prefix: str = "[you] ", **kwargs):
         return next(inputs)
 
-    async def fake_build_services() -> _FakeServices:
+    async def fake_build_services(*args, **kwargs) -> _FakeServices:
         return services
 
     monkeypatch.setattr("agentos.engine.runtime.TurnRunner", FakeTurnRunner)
@@ -1168,7 +1168,7 @@ async def test_standalone_reset_truncates_non_empty_transcript(
     async def fake_prompt_user(prefix: str = "[you] ", **kwargs):
         return next(inputs)
 
-    async def fake_build_services() -> _FakeServices:
+    async def fake_build_services(*args, **kwargs) -> _FakeServices:
         return services
 
     monkeypatch.setattr("agentos.engine.runtime.TurnRunner", FakeTurnRunner)
@@ -1209,7 +1209,7 @@ async def test_standalone_compact_missing_flush_service_does_not_block_compactio
     async def fake_prompt_user(prefix: str = "[you] ", **kwargs):
         return next(inputs)
 
-    async def fake_build_services() -> _FakeServices:
+    async def fake_build_services(*args, **kwargs) -> _FakeServices:
         return services
 
     monkeypatch.setattr("agentos.engine.runtime.TurnRunner", FakeTurnRunner)
@@ -1244,7 +1244,7 @@ async def test_standalone_slash_compact_keeps_legacy_compact_manager_compatible(
     async def fake_prompt_user(prefix: str = "[you] ", **kwargs):
         return next(inputs)
 
-    async def fake_build_services() -> _FakeServices:
+    async def fake_build_services(*args, **kwargs) -> _FakeServices:
         return services
 
     monkeypatch.setattr("agentos.engine.runtime.TurnRunner", FakeTurnRunner)

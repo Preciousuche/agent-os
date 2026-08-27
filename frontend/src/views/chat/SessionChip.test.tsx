@@ -154,6 +154,60 @@ describe('SessionChip', () => {
     expect(onExport).toHaveBeenCalledTimes(1)
   })
 
+  it('moves the session into a project from the actions menu', () => {
+    const onMoveToProject = vi.fn()
+    renderChip({
+      onMoveToProject,
+      projectsById: new Map([
+        ['p2', 'Zulu docs'],
+        ['p1', 'Alpha research'],
+      ]),
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Chat actions' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Move this session to a project' }))
+    // The picker swaps in: "No project" first, then projects sorted by name.
+    const items = screen.getAllByRole('menuitem').map((el) => el.textContent)
+    expect(items).toEqual(['No project', 'Alpha research', 'Zulu docs'])
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Alpha research' }))
+    expect(onMoveToProject).toHaveBeenCalledWith('p1')
+    expect(screen.queryByRole('menu', { name: 'Chat actions' })).not.toBeInTheDocument()
+  })
+
+  it('detaches via "No project" and treats the current choice as a no-op', () => {
+    const onMoveToProject = vi.fn()
+    renderChip({
+      onMoveToProject,
+      projectId: 'p1',
+      projectsById: new Map([['p1', 'Alpha research']]),
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Chat actions' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Move this session to a project' }))
+    // Selecting the project the session is already in changes nothing.
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Alpha research' }))
+    expect(onMoveToProject).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Chat actions' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Move this session to a project' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'No project' }))
+    expect(onMoveToProject).toHaveBeenCalledWith(null)
+  })
+
+  it('hides the move action without projects, unless the session is in one', () => {
+    renderChip({ onMoveToProject: vi.fn(), projectsById: new Map() })
+    fireEvent.click(screen.getByRole('button', { name: 'Chat actions' }))
+    expect(
+      screen.queryByRole('menuitem', { name: 'Move this session to a project' }),
+    ).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Chat actions' })) // close
+
+    // A session already in a (stale) project can still detach.
+    renderChip({ onMoveToProject: vi.fn(), projectId: 'p9', projectsById: new Map() })
+    fireEvent.click(screen.getAllByRole('button', { name: 'Chat actions' })[1]!)
+    expect(
+      screen.getByRole('menuitem', { name: 'Move this session to a project' }),
+    ).toBeInTheDocument()
+  })
+
   it('anchors the actions menu to the actions trigger wrapper', () => {
     renderChip({ onExport: vi.fn() })
     fireEvent.click(screen.getByRole('button', { name: 'Chat actions' }))

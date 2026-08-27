@@ -16,6 +16,7 @@ import {
   CalendarClock,
   ChevronLeft,
   ChevronRight,
+  FolderKanban,
   LayoutDashboard,
   Menu,
   MessageSquare,
@@ -67,7 +68,10 @@ function navGroups(): ReadonlyArray<{
   return [
     {
       label: t('shell.navGroupChat'),
-      items: [{ path: 'chat', title: t('shell.viewChat'), icon: MessageSquare }],
+      items: [
+        { path: 'chat', title: t('shell.viewChat'), icon: MessageSquare },
+        { path: 'projects', title: t('shell.viewProjects'), icon: FolderKanban },
+      ],
     },
     {
       label: t('shell.navGroupControl'),
@@ -169,6 +173,7 @@ export const NAV_SHORTCUTS: ReadonlyArray<NavShortcutSpec> = [
   { combo: 'g n', path: 'channels', descriptionKey: 'shell.shortcutNavChannels' },
   { combo: 'g m', path: 'mcp', descriptionKey: 'shell.shortcutNavMcp' },
   { combo: 'g k', path: 'skills', descriptionKey: 'shell.shortcutNavSkills' },
+  { combo: 'g j', path: 'projects', descriptionKey: 'shell.shortcutNavProjects' },
   { combo: 'g s', path: 'sessions', descriptionKey: 'shell.shortcutNavSessions' },
   { combo: 'g a', path: 'agents', descriptionKey: 'shell.shortcutNavAgents' },
   { combo: 'g u', path: 'usage', descriptionKey: 'shell.shortcutNavUsage' },

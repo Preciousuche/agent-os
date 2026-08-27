@@ -25,8 +25,17 @@ def coerce_schedule_from_params(params: dict[str, Any]) -> tuple[ScheduleKind, s
         return coerce_schedule(schedule)
     expression = params.get("expression")
     if isinstance(expression, str) and expression.strip():
+        # Honour the `timezone` alias the same way the structured path does
+        # via _top_level_tz — otherwise a legacy caller passing
+        # {"expression": "...", "timezone": "Asia/Shanghai"} silently dropped
+        # the tz while {"expression": "...", "tz": "..."} kept it.
+        top_tz = _top_level_tz(params)
         return coerce_schedule(
-            {"kind": "cron", "expr": expression, "tz": params.get("tz", "") or ""}
+            {
+                "kind": "cron",
+                "expr": expression.strip(),
+                "tz": top_tz,
+            }
         )
     raise ValueError("params required: schedule (object) or expression (string)")
 

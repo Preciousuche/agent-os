@@ -271,7 +271,6 @@ class StreamConsumerStageInput:
     usage_tracker: Any | None = None
     budgets_cfg: Any | None = None
 
-
 # ---------------------------------------------------------------------------
 # Per-event handler classes
 # ---------------------------------------------------------------------------
@@ -802,22 +801,21 @@ class _CompactionHandler:
         )
 
     async def _fire_before_compact(self, state: CompactionState) -> None:
-        for hook in self._compaction_hooks:
-            try:
-                await hook.before_compact(state)
-            except Exception:  # noqa: BLE001 - hook isolation contract
-                pass
+        # Imported inline to avoid import cycle
+        from agentos.engine.hooks import fire_before_compact
+
+        await fire_before_compact(self._compaction_hooks, state)
 
     async def _fire_after_compact(
         self,
         state: CompactionState,
         outcome: dict[str, Any],
     ) -> None:
-        for hook in self._compaction_hooks:
-            try:
-                await hook.after_compact(state, outcome)
-            except Exception:  # noqa: BLE001 - hook isolation contract
-                pass
+        # Imported inline to avoid import cycle
+        from agentos.engine.hooks import fire_after_compact
+
+        await fire_after_compact(self._compaction_hooks, state, outcome)
+
 
 
 # ---------------------------------------------------------------------------

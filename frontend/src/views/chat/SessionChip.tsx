@@ -1,10 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { toast } from 'sonner'
-import { ChevronDown, Copy, FileDown, MoreHorizontal, Pencil, RotateCcw } from 'lucide-react'
+import {
+  Check,
+  ChevronDown,
+  Copy,
+  FileDown,
+  FolderKanban,
+  MoreHorizontal,
+  Pencil,
+  RotateCcw,
+} from 'lucide-react'
 import { authenticatedHeaders } from '@/lib/http-auth'
 import {
   classifySessionKey,
+  groupSessionsByProject,
   runStatusChipClass,
   sessionItemKey,
   sessionItemName,
@@ -110,6 +120,20 @@ export interface SessionChipProps {
    * → the popover degrades to manual entry.
    */
   fetchSessions?: () => Promise<SessionListItem[]>
+  /**
+   * Project id → name map. When provided, sessions in a project render under
+   * a per-project tier above the kind groups; omit and the switcher keeps its
+   * legacy kind-only grouping.
+   */
+  projectsById?: Map<string, string>
+  /** The current session's project id ('' when project-less). */
+  projectId?: string
+  /**
+   * Move the current session into a project (`sessions.patch`); `null`
+   * detaches. Omit and the "Move to project" action is hidden — same
+   * contract as `onExport`.
+   */
+  onMoveToProject?: (projectId: string | null) => void
 }
 
 function defaultCopy(key: string): Promise<void> {
@@ -158,6 +182,9 @@ export function SessionChip({
   onRename,
   onCopy = defaultCopy,
   fetchSessions = defaultFetchSessions,
+  projectsById,
+  projectId = '',
+  onMoveToProject,
 }: SessionChipProps) {
   const [open, setOpen] = useState(false)
   const [filter, setFilter] = useState('')
@@ -171,6 +198,8 @@ export function SessionChip({
   // opening a modal — renaming is a one-field edit and the menu is already an
   // Escape-owning layer, so a second layer would only add focus bookkeeping.
   const [renaming, setRenaming] = useState(false)
+  // Like renaming, the project picker swaps the menu's item list in place.
+  const [moving, setMoving] = useState(false)
   const [nameDraft, setNameDraft] = useState('')
   const rootRef = useRef<HTMLDivElement>(null)
   const actionsTriggerRef = useRef<HTMLButtonElement>(null)
@@ -208,6 +237,7 @@ export function SessionChip({
     setOpen(false)
     setActionsOpen(false)
     setRenaming(false)
+    setMoving(false)
     setFilter('')
     setSessions(null)
     setFailed(false)
@@ -234,6 +264,7 @@ export function SessionChip({
     setFailed(false)
     setManualKey(sessionKey)
     setRenaming(false)
+    setMoving(false)
     setActionsOpen((wasOpen) => !wasOpen)
   }, [sessionKey])
 
@@ -294,10 +325,11 @@ export function SessionChip({
 
   useEffect(() => {
     // While the inline rename editor is up the input owns focus (autoFocus),
-    // so don't yank it back to the first menu item.
+    // so don't yank it back to the first menu item. `moving` is a dep so the
+    // first project-picker item receives focus when the list swaps in.
     if (!actionsOpen || renaming) return
     actionsMenuRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus()
-  }, [actionsOpen, renaming])
+  }, [actionsOpen, renaming, moving])
 
   // chat.js:2004-2020 — dismiss on outside click / Escape while open.
   useEffect(() => {
@@ -366,9 +398,22 @@ export function SessionChip({
     [dismiss, focusBeforeDismiss, renaming],
   )
 
-  // chat.js:1901-1957 — group the fetched sessions, apply the filter.
-  const groups: Array<{ label: SessionGroup; items: SessionListItem[] }> = []
+  // chat.js:1901-1957 — group the fetched sessions, apply the filter. Project
+  // tiers (named by the project) render above the legacy kind groups.
+  const groups: Array<{ key: string; label: string; items: SessionListItem[] }> = []
   if (sessions) {
+    const f = filter.trim().toLowerCase()
+    const { projectTiers, rest } = groupSessionsByProject(
+      sessions,
+      projectsById ?? new Map<string, string>(),
+    )
+    for (const tier of projectTiers) {
+      const visible = f
+        ? tier.items.filter((it) => sessionItemSearchText(it).includes(f))
+        : tier.items
+      if (visible.length)
+        groups.push({ key: `project:${tier.id}`, label: tier.name, items: visible })
+    }
     const bucket: Record<SessionGroup, SessionListItem[]> = {
       'Web chat': [],
       CLI: [],
@@ -377,16 +422,16 @@ export function SessionChip({
       Sessions: [],
       Other: [],
     }
-    for (const item of sessions) {
+    for (const item of rest) {
       const g = classifySessionKey(item)
       if (g) bucket[g].push(item)
     }
-    const f = filter.trim().toLowerCase()
     for (const label of GROUP_ORDER) {
       const visible = f
         ? bucket[label].filter((it) => sessionItemSearchText(it).includes(f))
         : bucket[label]
-      if (visible.length) groups.push({ label, items: visible })
+      if (visible.length)
+        groups.push({ key: `kind:${label}`, label: groupLabel(label), items: visible })
     }
   }
   const total = groups.reduce((n, g) => n + g.items.length, 0)
@@ -482,7 +527,48 @@ export function SessionChip({
                 <span className="chat-session-rename__hint">{t('chat.sessionRenameHint')}</span>
               </form>
             ) : null}
-            {!renaming && onRename ? (
+            {moving ? (
+              // In-place project picker (mirrors the inline rename swap):
+              // "No project" detaches, a project entry moves. The current
+              // choice is marked and selecting it is a no-op close.
+              <>
+                <div className="chat-session-actions-menu__label t-label">
+                  {t('chat.sessionMoveToProject')}
+                </div>
+                {[
+                  { id: '', label: t('chat.sessionMoveNoProject') },
+                  ...[...(projectsById ?? new Map<string, string>()).entries()]
+                    .map(([id, label]) => ({ id, label }))
+                    .sort((a, b) => a.label.localeCompare(b.label)),
+                ].map((option) => {
+                  const isCurrent = option.id === (projectId || '')
+                  return (
+                    <button
+                      key={option.id || 'none'}
+                      type="button"
+                      className={`chat-session-actions-menu__item${isCurrent ? ' is-current' : ''}`}
+                      role="menuitem"
+                      tabIndex={-1}
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() =>
+                        runHeaderAction(() => {
+                          if (!isCurrent && onMoveToProject)
+                            onMoveToProject(option.id === '' ? null : option.id)
+                        })
+                      }
+                    >
+                      {isCurrent ? (
+                        <Check aria-hidden="true" />
+                      ) : (
+                        <FolderKanban aria-hidden="true" />
+                      )}
+                      <span>{option.label}</span>
+                    </button>
+                  )
+                })}
+              </>
+            ) : null}
+            {!renaming && !moving && onRename ? (
               <button
                 type="button"
                 className="chat-session-actions-menu__item"
@@ -496,31 +582,49 @@ export function SessionChip({
                 <span>{t('chat.sessionRename')}</span>
               </button>
             ) : null}
-            <button
-              type="button"
-              className="chat-session-actions-menu__item"
-              role="menuitem"
-              tabIndex={-1}
-              aria-label={t('chat.sessionCopyKeyAria')}
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => runHeaderAction(copy)}
-            >
-              <Copy aria-hidden="true" />
-              <span>{t('chat.sessionCopyKey')}</span>
-            </button>
-            <button
-              type="button"
-              className="chat-session-actions-menu__item"
-              role="menuitem"
-              tabIndex={-1}
-              aria-label={t('chat.sessionResetAria')}
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => runHeaderAction(onReset)}
-            >
-              <RotateCcw aria-hidden="true" />
-              <span>{t('chat.sessionReset')}</span>
-            </button>
-            {onExport ? (
+            {!moving && onMoveToProject && ((projectsById?.size ?? 0) > 0 || projectId) ? (
+              <button
+                type="button"
+                className="chat-session-actions-menu__item"
+                role="menuitem"
+                tabIndex={-1}
+                aria-label={t('chat.sessionMoveToProjectAria')}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => setMoving(true)}
+              >
+                <FolderKanban aria-hidden="true" />
+                <span>{t('chat.sessionMoveToProject')}</span>
+              </button>
+            ) : null}
+            {!moving ? (
+              <button
+                type="button"
+                className="chat-session-actions-menu__item"
+                role="menuitem"
+                tabIndex={-1}
+                aria-label={t('chat.sessionCopyKeyAria')}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => runHeaderAction(copy)}
+              >
+                <Copy aria-hidden="true" />
+                <span>{t('chat.sessionCopyKey')}</span>
+              </button>
+            ) : null}
+            {!moving ? (
+              <button
+                type="button"
+                className="chat-session-actions-menu__item"
+                role="menuitem"
+                tabIndex={-1}
+                aria-label={t('chat.sessionResetAria')}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => runHeaderAction(onReset)}
+              >
+                <RotateCcw aria-hidden="true" />
+                <span>{t('chat.sessionReset')}</span>
+              </button>
+            ) : null}
+            {!moving && onExport ? (
               <button
                 type="button"
                 className="chat-session-actions-menu__item"
@@ -599,10 +703,8 @@ export function SessionChip({
                   </div>
                 ) : (
                   groups.map((group) => (
-                    <div className="chat-session-popover-group" key={group.label}>
-                      <div className="chat-session-popover-group-label">
-                        {groupLabel(group.label)}
-                      </div>
+                    <div className="chat-session-popover-group" key={group.key}>
+                      <div className="chat-session-popover-group-label">{group.label}</div>
                       {group.items.map((item) => {
                         const k = sessionItemKey(item)
                         const name = sessionItemName(item)

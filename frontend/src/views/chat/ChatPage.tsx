@@ -269,6 +269,7 @@ export function ChatPage() {
   // an agent can rename its own session mid-turn (the `session_rename` tool),
   // and that write has no push event of its own.
   const [sessionName, setSessionName] = useState('')
+  const [sessionProjectId, setSessionProjectId] = useState('')
   const runStatus = runState.status
   useEffect(() => {
     if (!sessionKey) return
@@ -276,20 +277,57 @@ export function ChatPage() {
     void (async () => {
       try {
         await rpc.waitForConnection()
-        const resolved = await rpc.call<{ display_name?: string | null }>('sessions.resolve', {
+        const resolved = await rpc.call<{
+          display_name?: string | null
+          project_id?: string | null
+        }>('sessions.resolve', {
           key: sessionKey,
         })
-        if (!cancelled) setSessionName(String(resolved?.display_name || ''))
+        if (!cancelled) {
+          setSessionName(String(resolved?.display_name || ''))
+          setSessionProjectId(String(resolved?.project_id || ''))
+        }
       } catch {
         // A session that does not exist yet (a fresh `/new` key) simply has no
         // name — leaving the chip on the key is the correct fallback.
-        if (!cancelled) setSessionName('')
+        if (!cancelled) {
+          setSessionName('')
+          setSessionProjectId('')
+        }
       }
     })()
     return () => {
       cancelled = true
     }
   }, [rpc, sessionKey, runStatus])
+
+  // ── Projects (id → name) for the switcher tiers and the header badge ──────
+  const [projectsById, setProjectsById] = useState<Map<string, string>>(() => new Map())
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        await rpc.waitForConnection()
+        const data = await rpc.call<{
+          projects?: Array<{ project_id?: string; projectId?: string; name?: string }>
+        }>('projects.list', {})
+        if (cancelled) return
+        const map = new Map<string, string>()
+        for (const p of data.projects ?? []) {
+          const id = String(p.project_id || p.projectId || '')
+          if (id) map.set(id, String(p.name || id.slice(0, 8)))
+        }
+        setProjectsById(map)
+      } catch {
+        // Projects are additive chrome; the chat works fine without the map.
+        if (!cancelled) setProjectsById(new Map())
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [rpc, sessionKey])
+  const sessionProjectName = sessionProjectId ? projectsById.get(sessionProjectId) : undefined
 
   const onRenameSession = useCallback(
     (name: string) => {
@@ -308,6 +346,25 @@ export function ChatPage() {
       })()
     },
     [rpc, sessionKey, sessionName],
+  )
+
+  const onMoveSessionToProject = useCallback(
+    (projectId: string | null) => {
+      const previous = sessionProjectId
+      // Optimistic, mirroring onRenameSession: the badge is the confirmation.
+      setSessionProjectId(projectId ?? '')
+      void (async () => {
+        try {
+          await rpc.call('sessions.patch', { key: sessionKey, projectId })
+          toast.success(projectId ? t('chat.sessionMoved') : t('chat.sessionMoveDetached'))
+        } catch (err) {
+          setSessionProjectId(previous)
+          const message = err instanceof Error ? err.message : String(err)
+          toast.error(t('chat.sessionMoveFailed', { message }))
+        }
+      })()
+    },
+    [rpc, sessionKey, sessionProjectId],
   )
 
   // The per-send session intent (chat.js:335 `_pendingSessionIntent`) — rides on
@@ -688,7 +745,18 @@ export function ChatPage() {
             onReset={resetSession}
             onExport={onExportMarkdown}
             onRename={onRenameSession}
+            projectsById={projectsById}
+            projectId={sessionProjectId}
+            onMoveToProject={onMoveSessionToProject}
           />
+          {sessionProjectName ? (
+            <span
+              className="chip chat-session-project-badge"
+              title={t('chat.projectBadgeTitle', { name: sessionProjectName })}
+            >
+              {sessionProjectName}
+            </span>
+          ) : null}
         </div>
       </ShellHeaderPortal>
       <div className="chat-thread" ref={containerRef} data-history-ready="false" />

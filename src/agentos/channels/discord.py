@@ -503,7 +503,6 @@ class DiscordChannel:
         return True
 
     async def _handle_discord_component_interaction(self, data: dict[str, Any]) -> None:
-    async def _handle_discord_component_interaction(self, data: dict[str, Any]) -> None:
         interaction_id = str(data.get("id") or "")
         if interaction_id and not self._dedupe.check_and_add(f"interaction:{interaction_id}"):
             log.debug(

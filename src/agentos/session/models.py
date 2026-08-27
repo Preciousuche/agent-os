@@ -146,6 +146,9 @@ class SessionNode(SQLModel, table=True):
     group_id: str | None = None
     subject: str | None = None
 
+    # Project grouping (nullable — legacy sessions stay project-less)
+    project_id: str | None = Field(default=None, index=True)
+
     # Origin metadata (JSON blob)
     origin: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON))
 
@@ -182,6 +185,29 @@ class SessionNode(SQLModel, table=True):
         # string when neither display_name nor label is set.
         sid = (self.session_id or "").strip()
         return sid[:8] if sid else None
+
+
+class ProjectNode(SQLModel, table=True):
+    """Persisted project grouping chat sessions (cross-agent).
+
+    Sessions of any agent may join a project. ``agent_id`` is not a
+    membership boundary — it records the default agent that "new chat in
+    project" starts sessions with. ``knowledge`` is free-form text injected
+    into the system prompt of every member session (see
+    ``TurnRunner._augment_extra_context_with_project_knowledge``).
+    """
+
+    __tablename__ = "projects"
+
+    project_id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    agent_id: str = Field(default="main", index=True)
+    name: str
+    knowledge: str = ""
+    created_at: int = Field(default_factory=_now_ms)
+    updated_at: int = Field(default_factory=_now_ms)
+
+    # Schema generation (S-MIGRATE).
+    schema_version: int = 1
 
 
 class TranscriptEntry(SQLModel, table=True):

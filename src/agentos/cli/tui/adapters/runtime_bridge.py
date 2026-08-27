@@ -8,7 +8,7 @@ or standalone runtime dependencies.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from typing import Any, Protocol
 
 import agentos.cli.tui.adapters.terminal_bridge as _terminal_bridge
@@ -369,6 +369,9 @@ async def run_standalone_chat(
     timeout: float | None = None,
     output_console: Any | None = None,
     error_panel_factory: Callable[[str], Any] | None = None,
+    turn_hooks: Sequence[Any] | None = None,
+    compaction_hooks: Sequence[Any] | None = None,
+    tool_hooks: Sequence[Any] | None = None,
 ) -> None:
     repl_runner = (
         globals()["run_concurrent_repl"] if run_concurrent_repl is None else run_concurrent_repl
@@ -398,6 +401,9 @@ async def run_standalone_chat(
         workspace=workspace,
         workspace_strict=workspace_strict,
         timeout=timeout,
+        turn_hooks=turn_hooks,
+        compaction_hooks=compaction_hooks,
+        tool_hooks=tool_hooks,
         deps=_standalone_runtime.StandaloneRuntimeDependencies(
             stream_response=active_stream_response,
             image_command_handler=active_image_command_handler,
@@ -416,6 +422,9 @@ async def standalone_chat_runner(
     workspace: str | None = None,
     workspace_strict: bool | None = None,
     timeout: float | None = None,
+    turn_hooks: Sequence[Any] | None = None,
+    compaction_hooks: Sequence[Any] | None = None,
+    tool_hooks: Sequence[Any] | None = None,
 ) -> None:
     await run_standalone_chat(
         model=model,
@@ -423,4 +432,7 @@ async def standalone_chat_runner(
         workspace=workspace,
         workspace_strict=workspace_strict,
         timeout=timeout,
+        turn_hooks=turn_hooks,
+        compaction_hooks=compaction_hooks,
+        tool_hooks=tool_hooks,
     )

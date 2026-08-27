@@ -3,7 +3,6 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from agentos.provider.types import ToolDefinition, ToolInputSchema
 from agentos.tools.policy import ToolSurfaceCapabilities
 from agentos.tools.types import (
     CallerKind,
@@ -15,8 +14,6 @@ from agentos.tools.types import (
 from agentos.tools.visibility import (
     ToolProfile,
     effective_tool_context,
-    filter_by_profile,
-    profile_allows_tool,
     resolve_profile,
     visible_registered_tools,
 )
@@ -43,14 +40,6 @@ def _registered_tool(
             exposed_by_default=exposed_by_default,
         ),
         handler=_handler,
-    )
-
-
-def _tool_definition(name: str) -> ToolDefinition:
-    return ToolDefinition(
-        name=name,
-        description=f"{name} tool",
-        input_schema=ToolInputSchema(type="object", properties={}, required=[]),
     )
 
 
@@ -100,21 +89,12 @@ def test_registry_delegates_visibility_policy_to_tools_visibility_boundary() -> 
     registry_functions = _top_level_functions(REGISTRY)
     registry_assignments = _top_level_assignments(REGISTRY)
     assert "ToolProfile" not in registry_classes
-    assert "filter_by_profile" not in registry_functions
-    assert "profile_allows_tool" not in registry_functions
     assert "resolve_profile" not in registry_functions
-    assert {
-        "ToolProfile",
-        "filter_by_profile",
-        "profile_allows_tool",
-        "resolve_profile",
-    } <= registry_assignments
+    assert {"ToolProfile", "resolve_profile"} <= registry_assignments
 
     visibility_classes = _top_level_classes(VISIBILITY)
     visibility_functions = _top_level_functions(VISIBILITY)
     assert "ToolProfile" in visibility_classes
-    assert "filter_by_profile" in visibility_functions
-    assert "profile_allows_tool" in visibility_functions
     assert "resolve_profile" in visibility_functions
     assert "effective_tool_context" in visibility_functions
     assert "visible_registered_tools" in visibility_functions
@@ -122,25 +102,9 @@ def test_registry_delegates_visibility_policy_to_tools_visibility_boundary() -> 
 
 def test_visibility_boundary_uses_single_configured_profile() -> None:
     channel_ctx = ToolContext(caller_kind=CallerKind.CHANNEL)
-    profile = resolve_profile(channel_ctx)
 
-    filtered = filter_by_profile(
-        [
-            _tool_definition("publish_artifact"),
-            _tool_definition("git_commit"),
-            _tool_definition("read_file"),
-        ],
-        profile,
-    )
-
-    assert profile is ToolProfile.CONFIGURED
-    assert [tool.name for tool in filtered] == [
-        "publish_artifact",
-        "git_commit",
-        "read_file",
-    ]
-    assert profile_allows_tool("cron", profile) is True
-    assert profile_allows_tool("git_commit", profile) is True
+    assert resolve_profile(channel_ctx) is ToolProfile.CONFIGURED
+    assert list(ToolProfile) == [ToolProfile.CONFIGURED]
 
 
 def test_visibility_boundary_preserves_context_visibility_rules() -> None:

@@ -3350,3 +3350,12 @@
   color: var(--dim);
   font-size: 0.68rem;
 }
+
+/* Project badge next to the session chip — signals the session shares its
+   project's knowledge. */
+.chat-session-project-badge {
+  max-width: 10rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

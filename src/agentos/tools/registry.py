@@ -24,8 +24,6 @@ from agentos.tools.types import (
 log = structlog.get_logger(__name__)
 
 ToolProfile = visibility_policy.ToolProfile
-filter_by_profile = visibility_policy.filter_by_profile
-profile_allows_tool = visibility_policy.profile_allows_tool
 resolve_profile = visibility_policy.resolve_profile
 
 

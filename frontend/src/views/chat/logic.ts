@@ -96,6 +96,9 @@ export type SessionListItem =
       channel?: string
       source_kind?: string
       sourceKind?: string
+      // Project grouping (sessions.list rows carry both casings).
+      project_id?: string | null
+      projectId?: string | null
       // Run-status fields (chat.js:1611 reads these off the item too).
       run_status?: string
       runStatus?: string
@@ -135,6 +138,43 @@ export function sessionItemSearchText(item: SessionListItem): string {
   if (typeof item === 'string') return key.toLowerCase()
   const derived = String(item.derived_title || item.derivedTitle || '')
   return [key, sessionItemName(item), derived].filter(Boolean).join(' ').toLowerCase()
+}
+
+/** The project id a session-list item belongs to ('' when project-less). */
+export function sessionItemProjectId(item: SessionListItem): string {
+  if (typeof item === 'string') return ''
+  return String(item.project_id || item.projectId || '')
+}
+
+/**
+ * Partition session items into per-project tiers (ordered by project name)
+ * and the project-less rest. Items whose project id has no name in
+ * `projectNames` fall through to `rest` so a stale/foreign id never renders
+ * an unnamed group.
+ */
+export function groupSessionsByProject(
+  items: SessionListItem[],
+  projectNames: Map<string, string>,
+): {
+  projectTiers: Array<{ id: string; name: string; items: SessionListItem[] }>
+  rest: SessionListItem[]
+} {
+  const byProject = new Map<string, SessionListItem[]>()
+  const rest: SessionListItem[] = []
+  for (const item of items) {
+    const pid = sessionItemProjectId(item)
+    if (pid && projectNames.has(pid)) {
+      const bucket = byProject.get(pid)
+      if (bucket) bucket.push(item)
+      else byProject.set(pid, [item])
+    } else {
+      rest.push(item)
+    }
+  }
+  const projectTiers = [...byProject.entries()]
+    .map(([id, tierItems]) => ({ id, name: projectNames.get(id) ?? id, items: tierItems }))
+    .sort((a, b) => a.name.localeCompare(b.name))
+  return { projectTiers, rest }
 }
 
 /**

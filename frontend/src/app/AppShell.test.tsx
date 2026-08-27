@@ -476,6 +476,7 @@ describe('app shell chrome', () => {
       .map((el) => el.textContent)
     expect(links).toEqual([
       'Chat',
+      'Projects',
       'Overview',
       'Health',
       'Channels',

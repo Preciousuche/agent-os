@@ -866,8 +866,7 @@ def _session_storage_or_none() -> Any:
                 "account_id": {
                     "type": "string",
                     "description": (
-                        "Optional account binding for multi-account channels. "
-                        "Stored on the job but not yet honoured by channel delivery."
+                        "Optional account binding for multi-account channels."
                     ),
                 },
                 "thread_id": {

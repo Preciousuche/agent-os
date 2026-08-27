@@ -8,7 +8,6 @@ from enum import StrEnum
 
 import structlog
 
-from agentos.provider.types import ToolDefinition
 from agentos.tools.policy_runtime import ToolSurfaceCapabilities, resolve_runtime_tool_surface
 from agentos.tools.types import (
     CRON_AGENT_ALLOW,
@@ -27,27 +26,6 @@ class ToolProfile(StrEnum):
     """Single role-free profile; fine-grained access lives in agent policy."""
 
     CONFIGURED = "configured"
-
-
-def filter_by_profile(
-    tools: list[ToolDefinition],
-    profile: ToolProfile | str,
-    ctx: ToolContext | None = None,
-) -> list[ToolDefinition]:
-    del ctx
-    ToolProfile(profile)
-    return list(tools)
-
-
-def profile_allows_tool(
-    tool_name: str,
-    profile: ToolProfile | str,
-    *,
-    explicitly_allowed: set[str] | frozenset[str] | None = None,
-) -> bool:
-    del tool_name, explicitly_allowed
-    ToolProfile(profile)
-    return True
 
 
 def resolve_profile(ctx: ToolContext | None) -> ToolProfile:

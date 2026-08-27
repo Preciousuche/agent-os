@@ -22,10 +22,15 @@ def test_agent_factory_adapter_passes_runner_tool_registry(monkeypatch) -> None:
     monkeypatch.setattr(agent_module, "Agent", RecordingAgent)
 
     registry = object()
+
+    def _check_spend_budget(session_key: str) -> tuple[bool, str | None]:
+        return False, None
+
     runner = SimpleNamespace(
         _tool_registry=registry,
         _usage_tracker=None,
         _session_flush_service=None,
+        _check_spend_budget=_check_spend_budget,
     )
     adapter = _TurnRunnerAgentFactoryAdapter(runner)
 
@@ -41,3 +46,6 @@ def test_agent_factory_adapter_passes_runner_tool_registry(monkeypatch) -> None:
     )
 
     assert captured["tool_registry"] is registry
+    # The constructed Agent re-checks spend ceilings between iterations, so the
+    # runner's guard has to reach it.
+    assert captured["spend_budget_guard"] is _check_spend_budget

@@ -75,6 +75,7 @@ from agentos.cli.mcp_server_cmd import app as mcp_server_app  # noqa: E402
 from agentos.cli.migrate_cmd import migrate_app  # noqa: E402
 from agentos.cli.models_cmd import app as models_app  # noqa: E402
 from agentos.cli.onboard_cmd import configure_command, onboard_app  # noqa: E402
+from agentos.cli.projects_cmd import app as projects_app  # noqa: E402
 from agentos.cli.providers_cmd import providers_app  # noqa: E402
 from agentos.cli.replay import replay_app  # noqa: E402
 from agentos.cli.sandbox_cmd import sandbox_app  # noqa: E402
@@ -105,6 +106,7 @@ app.add_typer(dist_app, name="dist")
 app.add_typer(mcp_server_app, name="mcp-server")
 app.add_typer(migrate_app, name="migrate")
 app.add_typer(models_app, name="models")
+app.add_typer(projects_app, name="projects")
 app.add_typer(providers_app, name="providers")
 app.add_typer(sandbox_app, name="sandbox")
 app.add_typer(search_app, name="search")

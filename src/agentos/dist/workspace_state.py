@@ -58,7 +58,6 @@ BUNDLED_CHANNELS: tuple[str, ...] = (
 # ``agentos.tools.builtin``. ``shell_policy`` is excluded as a helper
 # consumed by ``shell``.
 BUNDLED_TOOLS: tuple[str, ...] = (
-    "agent",
     "agents",
     "code_exec",
     "control",
@@ -67,7 +66,6 @@ BUNDLED_TOOLS: tuple[str, ...] = (
     "media",
     "memory_tools",
     "messaging",
-    "nodes",
     "patch",
     "session_search",
     "sessions",

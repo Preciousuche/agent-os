@@ -10,6 +10,7 @@ import { health } from './health'
 import { logs } from './logs'
 import { mcp } from './mcp'
 import { overview } from './overview'
+import { projects } from './projects'
 import { settings } from './settings'
 import { sessions } from './sessions'
 import { setup } from './setup'
@@ -45,6 +46,7 @@ export const en = {
   logs,
   mcp,
   overview,
+  projects,
   sessions,
   settings,
   setup,

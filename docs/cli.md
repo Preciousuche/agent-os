@@ -24,6 +24,7 @@ agentos <command> --help
 | `agentos chat` | Start interactive terminal chat. |
 | `agentos agent` | Run a single automation-friendly agent turn. |
 | `agentos sessions` | List, inspect, rename, resume, abort, delete, or export sessions. |
+| `agentos projects` | Group sessions into projects with shared knowledge injected into every member session. |
 | `agentos skills` | List, search, view, install, update, publish, and inspect skills. |
 | `agentos memory` | Inspect and maintain memory. |
 | `agentos channels` | Configure and inspect messaging channels. |
@@ -605,6 +606,31 @@ that `--search`, `resume`, and `show` all accept in place of the key. Inside a
 chat, `/rename <name>` does the same for the session you are in (no name
 clears it). Names are trimmed, collapsed to one line, and capped at 120
 characters.
+
+## Projects
+
+```sh
+agentos projects list
+agentos projects create "Token research" --knowledge "Shared context here"
+agentos projects create "Token research" --knowledge-file notes.md
+agentos projects show <project-id>
+agentos projects update <project-id> --name "New name" --knowledge-file notes.md
+agentos projects move <session-key> <project-id>   # 'none' detaches
+agentos projects delete <project-id>               # sessions survive, detached
+```
+
+A project groups chat sessions across agents and carries a free-form
+**knowledge** text (capped at 32,000 characters). Every session in the project
+gets that knowledge injected into its system prompt as a `Project Knowledge`
+block — edit it and the next turn of every member session picks it up.
+Sessions of any agent can join the same project (the `--agent` on `create`
+only sets the default agent for new chats in the project). New sessions can
+start inside a project (`agentos chat` sessions join via `projects move`, the
+Web UI has a "New chat in project" button), and deleting a project never
+deletes sessions: they just detach and stop receiving the knowledge. Agents can manage projects from prompting through the
+`projects_create` / `projects_list` / `projects_update` /
+`projects_move_session` tools, and `session_search scope=project` searches
+only sibling sessions of the calling session's project.
 
 Read: [`sessions.md`](sessions.md)
 

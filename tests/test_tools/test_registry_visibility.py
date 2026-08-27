@@ -104,33 +104,6 @@ def test_default_schema_keeps_canonical_tools_and_subagents_stays_explicit_only(
     assert "create_pptx" in surfaced_names
 
 
-def test_node_runtime_stubs_stay_hidden_until_explicitly_surfaced() -> None:
-    import agentos.tools.builtin  # noqa: F401
-    from agentos.tools.registry import get_default_registry
-
-    registry = get_default_registry()
-    owner_ctx = ToolContext(caller_kind=CallerKind.AGENT)
-
-    default_tools = registry.to_tool_definitions(owner_ctx)
-    assert {tool.name for tool in default_tools}.isdisjoint({"nodes", "canvas"})
-
-    surfaced_ctx = ToolContext(
-                caller_kind=CallerKind.AGENT,
-        surfaced_tools={"nodes", "canvas"},
-    )
-    surfaced_tools = {
-        tool.name: tool.description.lower()
-        for tool in registry.to_tool_definitions(surfaced_ctx)
-        if tool.name in {"nodes", "canvas"}
-    }
-
-    assert set(surfaced_tools) == {"nodes", "canvas"}
-    assert "node runtime" in surfaced_tools["nodes"]
-    assert "unavailable" in surfaced_tools["nodes"]
-    assert "node runtime" in surfaced_tools["canvas"]
-    assert "unavailable" in surfaced_tools["canvas"]
-
-
 def test_web_schema_hides_basic_pptx_fallback_by_default() -> None:
     import agentos.tools.builtin  # noqa: F401
     from agentos.tools.registry import get_default_registry
@@ -146,37 +119,24 @@ def test_web_schema_hides_basic_pptx_fallback_by_default() -> None:
 
 def test_channel_runtime_profile_exposes_publish_artifact() -> None:
     import agentos.tools.builtin  # noqa: F401
-    from agentos.tools.registry import filter_by_profile, get_default_registry, resolve_profile
+    from agentos.tools.registry import get_default_registry
 
     registry = get_default_registry()
     channel_ctx = ToolContext(caller_kind=CallerKind.CHANNEL)
 
-    names = {
-        tool.name
-        for tool in filter_by_profile(
-            registry.to_tool_definitions(channel_ctx),
-            resolve_profile(channel_ctx),
-        )
-    }
+    names = {tool.name for tool in registry.to_tool_definitions(channel_ctx)}
 
     assert "publish_artifact" in names
 
 
 def test_channel_runtime_uses_configured_agent_tool_surface() -> None:
     import agentos.tools.builtin  # noqa: F401
-    from agentos.tools.registry import filter_by_profile, get_default_registry, resolve_profile
+    from agentos.tools.registry import get_default_registry
 
     registry = get_default_registry()
     channel_ctx = ToolContext(caller_kind=CallerKind.CHANNEL)
 
-    names = {
-        tool.name
-        for tool in filter_by_profile(
-            registry.to_tool_definitions(channel_ctx),
-            resolve_profile(channel_ctx),
-            channel_ctx,
-        )
-    }
+    names = {tool.name for tool in registry.to_tool_definitions(channel_ctx)}
 
     assert {"create_csv", "create_xlsx", "create_pdf_report"} <= names
     assert "create_pptx" not in names
@@ -214,24 +174,6 @@ def test_channel_media_policy_surfaces_basic_pptx_fallback_explicitly() -> None:
     assert names == {"session_status", "create_pptx"}
 
 
-def test_profile_filter_does_not_apply_a_channel_role_gate() -> None:
-    from agentos.tools.registry import filter_by_profile, resolve_profile
-
-    ctx = ToolContext(
-                caller_kind=CallerKind.CHANNEL,
-        allowed_tools={"feishu_drive_upload_artifact", "write_file"},
-    )
-    tools = [
-        _spec("feishu_drive_upload_artifact"),
-        _spec("write_file"),
-        _spec("create_pptx"),
-    ]
-
-    names = {tool.name for tool in filter_by_profile(tools, resolve_profile(ctx), ctx)}
-
-    assert names == {"feishu_drive_upload_artifact", "create_pptx", "write_file"}
-
-
 def test_invalid_profile_override_cannot_surface_hidden_tools(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -249,7 +191,6 @@ def test_invalid_profile_override_cannot_surface_hidden_tools(
 
 def test_shared_channel_context_hides_private_memory_read_tools_even_when_allowed() -> None:
     from agentos.tools.policy import resolve_runtime_tool_surface
-    from agentos.tools.registry import filter_by_profile, resolve_profile
 
     registry = ToolRegistry()
     registry.register(_spec("memory_get"), _handler)
@@ -265,14 +206,7 @@ def test_shared_channel_context_hides_private_memory_read_tools_even_when_allowe
         capabilities=ToolSurfaceCapabilities(session_manager=True),
     )
 
-    names = {
-        tool.name
-        for tool in filter_by_profile(
-            registry.to_tool_definitions(channel_ctx),
-            resolve_profile(channel_ctx),
-            channel_ctx,
-        )
-    }
+    names = {tool.name for tool in registry.to_tool_definitions(channel_ctx)}
 
     assert "memory_get" not in names
     assert "memory_search" not in names
@@ -282,7 +216,6 @@ def test_shared_channel_context_hides_private_memory_read_tools_even_when_allowe
 
 def test_direct_channel_context_keeps_private_memory_read_tools() -> None:
     from agentos.tools.policy import resolve_runtime_tool_surface
-    from agentos.tools.registry import filter_by_profile, resolve_profile
 
     registry = ToolRegistry()
     registry.register(_spec("memory_get"), _handler)
@@ -295,14 +228,7 @@ def test_direct_channel_context_keeps_private_memory_read_tools() -> None:
         capabilities=ToolSurfaceCapabilities(session_manager=True),
     )
 
-    names = {
-        tool.name
-        for tool in filter_by_profile(
-            registry.to_tool_definitions(channel_ctx),
-            resolve_profile(channel_ctx),
-            channel_ctx,
-        )
-    }
+    names = {tool.name for tool in registry.to_tool_definitions(channel_ctx)}
 
     assert "memory_get" in names
     assert "memory_search" in names

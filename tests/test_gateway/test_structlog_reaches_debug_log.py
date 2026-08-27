@@ -14,7 +14,7 @@ import logging
 
 import structlog
 
-from agentos.gateway.boot import _setup_file_logging
+from agentos.gateway.boot import _remove_structlog_tee, _setup_file_logging
 from agentos.gateway.config import GatewayConfig
 
 
@@ -36,6 +36,7 @@ def _enable_file_logging(tmp_path, monkeypatch) -> None:
 
 
 def test_a_structlog_warning_lands_in_the_debug_log(tmp_path, monkeypatch) -> None:
+    _remove_structlog_tee()
     original = structlog.get_config()
     try:
         _enable_file_logging(tmp_path, monkeypatch)
@@ -56,6 +57,7 @@ def test_a_structlog_warning_lands_in_the_debug_log(tmp_path, monkeypatch) -> No
 
 
 def test_the_level_is_preserved_so_filters_still_work(tmp_path, monkeypatch) -> None:
+    _remove_structlog_tee()
     original = structlog.get_config()
     try:
         _enable_file_logging(tmp_path, monkeypatch)
@@ -74,6 +76,7 @@ def test_the_level_is_preserved_so_filters_still_work(tmp_path, monkeypatch) -> 
 def test_turning_file_logging_off_restores_the_previous_structlog_config(
     tmp_path, monkeypatch
 ) -> None:
+    _remove_structlog_tee()
     original = structlog.get_config()
     try:
         _enable_file_logging(tmp_path, monkeypatch)

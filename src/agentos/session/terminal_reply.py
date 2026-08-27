@@ -63,6 +63,11 @@ def build_terminal_reply(
         return "The task was cancelled before it finished."
     if status == AgentTaskStatus.ABANDONED.value or reason == "shutdown_timeout":
         return "The task stopped before it could finish."
+    if error_class == "budget_exceeded" or reason == "budget_exceeded":
+        # A spend ceiling is a deliberate refusal, not a failure. Keep the
+        # message that names the scope and the number instead of collapsing it
+        # into generic failure text the operator cannot act on.
+        return error_message or "The task stopped because a spend budget limit was reached."
     if status == AgentTaskStatus.FAILED.value or reason in {"error", "tool_error"}:
         return "The task failed before it could finish."
     if status == AgentTaskStatus.SUCCEEDED.value or reason in {"completed", "done"}:

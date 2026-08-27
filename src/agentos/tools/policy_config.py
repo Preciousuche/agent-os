@@ -29,6 +29,10 @@ _TOOL_GROUPS: Mapping[str, frozenset[str]] = {
             "sessions_spawn",
             "session_status",
             "session_rename",
+            "projects_create",
+            "projects_list",
+            "projects_update",
+            "projects_move_session",
         }
     ),
     "group:memory": frozenset({"memory_search", "memory_get"}),

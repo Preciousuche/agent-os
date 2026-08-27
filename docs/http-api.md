@@ -103,6 +103,15 @@ plus server-pushed events. It is one route on the same app — the REST surface
 above sits alongside it. See [`mcp-server.md`](mcp-server.md) for a bridge that
 uses this transport.
 
+Projects (session groups with shared knowledge) are WebSocket-only:
+`projects.create` / `projects.list` / `projects.get` / `projects.update` /
+`projects.delete` (params use `projectId`, `agentId`, `name`, `knowledge`;
+delete responds with `sessionsCleared` — sessions are detached, not deleted).
+`sessions.create` accepts an optional `projectId`, `sessions.patch` moves a
+session with `projectId` (explicit `null` detaches), and `sessions.list`
+accepts a `projectId` filter and emits `project_id`/`projectId` on every row.
+Project CRUD broadcasts a `projects.changed` event to connected clients.
+
 ### Environment variables (`env.*`)
 
 Control-surface only. Values never appear in a listing.

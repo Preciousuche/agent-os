@@ -8,6 +8,8 @@ import {
   canStageAttachmentMime,
   classifySessionKey,
   estimateTextTokens,
+  groupSessionsByProject,
+  sessionItemProjectId,
   hasPendingAttachmentWork,
   historyFallbackMessageIdentity,
   historyStableMessageIdentity,
@@ -1109,5 +1111,45 @@ describe('popPendingTail', () => {
     const out = popPendingTail([])
     expect(out.recovered).toBe(false)
     expect(out.queue).toHaveLength(0)
+  })
+})
+
+// Projects integration — project tiers in the session switcher.
+describe('sessionItemProjectId', () => {
+  it('reads both casings and tolerates strings/nulls', () => {
+    expect(sessionItemProjectId({ key: 'k', project_id: 'p1' })).toBe('p1')
+    expect(sessionItemProjectId({ key: 'k', projectId: 'p2' })).toBe('p2')
+    expect(sessionItemProjectId({ key: 'k', project_id: null })).toBe('')
+    expect(sessionItemProjectId('agent:main:webchat:aaa')).toBe('')
+  })
+})
+
+describe('groupSessionsByProject', () => {
+  const names = new Map([
+    ['p1', 'Research'],
+    ['p2', 'Docs'],
+  ])
+  it('partitions items into name-ordered project tiers and the rest', () => {
+    const items = [
+      { key: 'k1', project_id: 'p2' },
+      { key: 'k2', project_id: 'p1' },
+      { key: 'k3' },
+      { key: 'k4', project_id: 'p1' },
+    ]
+    const { projectTiers, rest } = groupSessionsByProject(items, names)
+    expect(projectTiers.map((t) => t.name)).toEqual(['Docs', 'Research'])
+    expect(projectTiers[1]!.items.map((i) => (typeof i === 'object' ? i.key : i))).toEqual([
+      'k2',
+      'k4',
+    ])
+    expect(rest.map((i) => (typeof i === 'object' ? i.key : i))).toEqual(['k3'])
+  })
+  it('drops unknown project ids to the rest so no unnamed tier renders', () => {
+    const { projectTiers, rest } = groupSessionsByProject(
+      [{ key: 'k1', project_id: 'stale' }],
+      names,
+    )
+    expect(projectTiers).toHaveLength(0)
+    expect(rest).toHaveLength(1)
   })
 })

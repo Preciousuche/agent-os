@@ -1006,6 +1006,17 @@
   outline-offset: -2px;
 }
 
+/* In-place project picker (the "Move to project" submenu swap). */
+.shell[data-surface='chat'] .chat-session-actions-menu__label {
+  padding: 0.375rem 0.75rem 0.25rem;
+  color: var(--muted-foreground);
+}
+
+.shell[data-surface='chat'] .chat-session-actions-menu__item.is-current {
+  color: var(--muted-foreground);
+  cursor: default;
+}
+
 /* Inline rename editor — replaces the "Rename session" row in place so the
    menu never has to hand focus to a second dismissible layer. */
 .shell[data-surface='chat'] .chat-session-rename {

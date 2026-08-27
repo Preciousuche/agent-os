@@ -28,6 +28,8 @@ export interface RawSession {
   display_name?: string
   displayName?: string
   subject?: string
+  project_id?: string | null
+  projectId?: string | null
   derived_title?: string
   derivedTitle?: string
   active_task?: RunTask | null

@@ -922,3 +922,40 @@
     transition: none;
   }
 }
+
+/* ── Projects integration ── */
+.sess-project-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  max-width: 100%;
+}
+
+.sess-project-chip svg {
+  width: 0.75rem;
+  height: 0.75rem;
+  flex-shrink: 0;
+}
+
+.sess-move-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  max-height: 14rem;
+  overflow-y: auto;
+}
+
+.sess-move-option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.375rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  cursor: pointer;
+  font-size: 0.875rem;
+}
+
+.sess-move-option:hover {
+  background: color-mix(in srgb, var(--surface) 76%, transparent);
+}

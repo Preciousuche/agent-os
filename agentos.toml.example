@@ -609,3 +609,25 @@ cron_default_mode = "bypass"            # off | bypass | full
 # command = "uvx"
 # args = ["mcp-server-fetch"]
 # env = {}
+
+# [budgets]
+# Money spend ceilings, in US dollars of estimated (or provider-billed) model
+# spend. Nothing is enforced until a ceiling is set. Spend persists in its own
+# state file (`spend_ledger.db`) — keyed by UTC day for the daily ceilings and
+# by session for the session ceiling — so a restart does not reset them.
+# A turn that would run past a hard limit is refused with a clear error; a
+# `*_warn` threshold surfaces a one-shot warning instead of stopping the turn.
+# Changing any of these requires a gateway restart to take effect.
+# enabled = true                         # suspend every ceiling without deleting the numbers
+# session_limit = 5.0                    # hard stop per session
+# session_warn = 4.0                     # warn once per session
+# daily_limit = 50.0                     # hard stop for gateway-wide spend today
+# daily_warn = 40.0                      # warn once per day
+# [budgets.agent_daily_limit]
+# main = 20.0
+# [budgets.agent_daily_warn]
+# main = 15.0
+# [budgets.channel_daily_limit]
+# telegram = 10.0
+# [budgets.channel_daily_warn]
+# telegram = 8.0

@@ -1203,3 +1203,44 @@ async def test_task_runtime_turn_honours_cron_job_elevation() -> None:
     assert tool_context.elevated == "bypass"
     assert "exec_command" in (tool_context.allowed_tools or set())
     assert "cron" in tool_context.denied_tools
+
+
+@pytest.mark.asyncio
+async def test_start_gateway_server_wires_hooks(tmp_path) -> None:
+    from agentos.engine.hooks import NoopCompactionHook, NoopToolHook, NoopTurnHook
+    from agentos.gateway.boot import start_gateway_server
+
+    th = NoopTurnHook()
+    ch = NoopCompactionHook()
+    toh = NoopToolHook()
+
+    config = GatewayConfig(
+        state_dir=str(tmp_path / "state"),
+        workspace_dir=str(tmp_path / "workspace"),
+        control_ui={"enabled": False},
+        channels={"channels": []},
+        mcp={"enabled": False},
+    )
+
+    server = await start_gateway_server(
+        config=config,
+        run=False,
+        turn_hooks=[th],
+        compaction_hooks=[ch],
+        tool_hooks=[toh],
+    )
+    try:
+        svc = server._services
+        assert svc is not None
+        assert svc.turn_hooks == [th]
+        assert svc.compaction_hooks == [ch]
+        assert svc.tool_hooks == [toh]
+
+        assert hasattr(svc, "_turn_runner_ref")
+        runner = svc._turn_runner_ref[0]
+        assert th in runner._turn_hooks
+        assert runner._compaction_hooks == (ch,)
+        assert runner._tool_hooks == (toh,)
+    finally:
+        await server.close()
+

@@ -90,10 +90,18 @@ function wireRpc(
     deleteReject?: boolean
     renameReject?: boolean
     createKey?: string
+    projects?: unknown[]
+    patchReject?: boolean
   } = {},
 ) {
   mockRpc.call.mockImplementation((method: string) => {
     switch (method) {
+      case 'projects.list':
+        return Promise.resolve({ projects: opts.projects ?? [] })
+      case 'sessions.patch':
+        return opts.patchReject
+          ? Promise.reject(new Error('patch failed'))
+          : Promise.resolve({ key: 'x', updated: ['projectId'] })
       case 'sessions.list':
         return opts.sessionsReject
           ? Promise.reject(new Error('sessions down'))
@@ -487,5 +495,83 @@ describe('SessionsPage', () => {
     wireRpc()
     renderPage()
     await waitFor(() => expect(document.title).toBe('Sessions - AgentOS Control'))
+  })
+
+  describe('projects integration', () => {
+    const PROJECTS = [{ project_id: 'proj-1', agent_id: 'main', name: 'Research' }]
+    const SESSIONS_WITH_PROJECT = [
+      { ...SESSIONS[0], project_id: 'proj-1' },
+      SESSIONS[1],
+      SESSIONS[2],
+    ]
+
+    it('hides the project filter when there are no projects', async () => {
+      wireRpc()
+      renderPage()
+      await screen.findByText('agent:main:chat:aaa')
+      expect(screen.queryByLabelText('Filter by project')).not.toBeInTheDocument()
+    })
+
+    it('filters rows by project and by "no project"', async () => {
+      wireRpc({ projects: PROJECTS, sessions: SESSIONS_WITH_PROJECT })
+      renderPage()
+      await screen.findByText('agent:main:chat:aaa')
+      const filter = await screen.findByLabelText('Filter by project')
+
+      fireEvent.change(filter, { target: { value: 'proj-1' } })
+      expect(screen.getByText('agent:main:chat:aaa')).toBeInTheDocument()
+      expect(screen.queryByText('agent:bot:chat:bbb')).not.toBeInTheDocument()
+
+      fireEvent.change(filter, { target: { value: 'none' } })
+      expect(screen.queryByText('agent:main:chat:aaa')).not.toBeInTheDocument()
+      expect(screen.getByText('agent:bot:chat:bbb')).toBeInTheDocument()
+    })
+
+    it('shows a project badge on rows in a project', async () => {
+      wireRpc({ projects: PROJECTS, sessions: SESSIONS_WITH_PROJECT })
+      const { container } = renderPage()
+      await screen.findByText('agent:main:chat:aaa')
+      await waitFor(() => {
+        const badge = container.querySelector('.sess-project-chip')
+        expect(badge).not.toBeNull()
+        expect(badge!.textContent).toBe('Research')
+      })
+    })
+
+    it('moves a session into a project via sessions.patch (cross-agent allowed)', async () => {
+      wireRpc({ projects: PROJECTS, sessions: SESSIONS_WITH_PROJECT })
+      renderPage()
+      await screen.findByText('agent:main:chat:aaa')
+      // Projects are cross-agent: the "bot" row can join proj-1 (agent "main").
+      fireEvent.click(
+        await screen.findByRole('button', {
+          name: 'Move session agent:bot:chat:bbb to a project',
+        }),
+      )
+      const dialog = await screen.findByRole('dialog')
+      fireEvent.click(within(dialog).getByRole('radio', { name: 'Research' }))
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Move' }))
+      await waitFor(() =>
+        expect(mockRpc.call).toHaveBeenCalledWith('sessions.patch', {
+          key: 'agent:bot:chat:bbb',
+          projectId: 'proj-1',
+        }),
+      )
+
+      // The "main" row can move out of its project (detach).
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Move session agent:main:chat:aaa to a project' }),
+      )
+      const moveDialog = await screen.findByRole('dialog')
+      fireEvent.click(within(moveDialog).getByRole('radio', { name: /no project/i }))
+      fireEvent.click(within(moveDialog).getByRole('button', { name: 'Move' }))
+      await waitFor(() =>
+        expect(mockRpc.call).toHaveBeenCalledWith('sessions.patch', {
+          key: 'agent:main:chat:aaa',
+          projectId: null,
+        }),
+      )
+      await waitFor(() => expect(toast.success).toHaveBeenCalled())
+    })
   })
 })

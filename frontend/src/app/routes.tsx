@@ -23,6 +23,9 @@ const loadChat: LazyRoute = async () => ({
 const loadSessions: LazyRoute = async () => ({
   Component: (await import('@/views/sessions/SessionsPage')).SessionsPage,
 })
+const loadProjects: LazyRoute = async () => ({
+  Component: (await import('@/views/projects/ProjectsPage')).ProjectsPage,
+})
 const loadAgents: LazyRoute = async () => ({
   Component: (await import('@/views/agents/AgentsPage')).AgentsPage,
 })
@@ -61,6 +64,7 @@ const VIEW_ROUTES: ReadonlyArray<ViewRoute> = [
   { path: 'overview', titleKey: 'shell.viewOverview', lazy: loadOverview },
   { path: 'health', titleKey: 'shell.viewHealth', lazy: loadHealth },
   { path: 'chat', titleKey: 'shell.viewChat', lazy: loadChat },
+  { path: 'projects', titleKey: 'shell.viewProjects', lazy: loadProjects },
   { path: 'sessions', titleKey: 'shell.viewSessions', lazy: loadSessions },
   { path: 'agents', titleKey: 'shell.viewAgents', lazy: loadAgents },
   { path: 'cron', titleKey: 'shell.viewCron', lazy: loadCron },

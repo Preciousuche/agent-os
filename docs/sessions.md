@@ -126,15 +126,46 @@ agentos sessions delete <session-key> --yes
 Deleting a session is for cleanup. Export first if you may need the transcript
 later.
 
+## Projects: Group Sessions and Share Knowledge
+
+```sh
+agentos projects create "Token research" --knowledge-file notes.md
+agentos projects move <session-key> <project-id>   # 'none' detaches
+agentos projects show <project-id>
+agentos projects update <project-id> --knowledge "Revised shared context"
+agentos projects delete <project-id>               # sessions survive, detached
+```
+
+A **project** groups chat sessions and carries a shared **knowledge** text.
+Projects sit above agents: sessions of any agent can join the same project,
+and the project page lists its sessions grouped per agent. Every session in
+the project gets the knowledge injected into its system prompt as a
+`Project Knowledge` block on every turn — edit the knowledge and the next
+turn of every member session sees the new version. A project's `agent` field
+is only the **default agent** that "New chat in project" starts sessions
+with, not a membership boundary.
+
+- Create a session directly inside a project from the Web UI Projects page
+  ("New chat in project"), or move existing sessions in and out at any time.
+- Deleting a project **never deletes its sessions** — they detach, keep their
+  history, and simply stop receiving the shared knowledge.
+- The agent can manage projects from prompting via the `projects_create`,
+  `projects_list`, `projects_update`, and `projects_move_session` tools, and
+  can search sibling transcripts with `session_search scope=project`.
+- Existing databases migrate automatically on gateway start: old sessions
+  come up project-less (`project_id` empty) and behave exactly as before.
+
 ## Web UI Workflow
 
 The Web UI uses the same session system. In the control console, use the chat
 session selector to switch sessions, inspect status, and continue recent work.
 On the Sessions page, click a row's name to rename it inline — Enter saves,
 Escape cancels, and an empty value clears the custom name. In Chat, the header
-`⋯` menu has **Rename session** with the same keys, the chip shows the name once
-set (the key stays in its tooltip and in **Copy session key**), and the session
-switcher lists and searches by name as well as by key.
+`⋯` menu has **Rename session** with the same keys and **Move to project** (an
+in-place picker — choose a project, or **No project** to detach the current
+session), the chip shows the name once set (the key stays in its tooltip and
+in **Copy session key**), and the session switcher lists and searches by name
+as well as by key.
 
 Open:
 

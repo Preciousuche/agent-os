@@ -4,9 +4,41 @@ All notable changes to AgentOS will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [Unreleased]
+## [2026.8.28] - 2026-08-28
 
 ### Added
+
+- Projects. Chat sessions can now be grouped into projects — cross-agent, so
+  sessions of any agent can join the same project (a project's agent field is
+  only the default for "new chat in project") — each carrying a free-form
+  **knowledge** text that is injected into the system prompt of every member
+  session (as an untrusted-wrapped `Project Knowledge`
+  block, re-read each turn so edits land on the next turn). Surfaces: a new
+  Projects page in the Web UI (create/rename/edit knowledge/delete, "New chat
+  in project", session list per project), project badge + filter + "Move to
+  project" on the Sessions page, project tiers in the chat session switcher,
+  an `agentos projects` CLI group (`list`/`create`/`show`/`update`/`delete`/
+  `move`), `projects.*` JSON-RPC methods plus `projectId` on
+  `sessions.create`/`sessions.patch`/`sessions.list`, and agent-facing
+  `projects_*` tools with `session_search scope=project` for searching sibling
+  transcripts. Existing databases migrate automatically (V011); old sessions
+  come up project-less, and deleting a project detaches its sessions instead
+  of deleting them.
+
+## [2026.8.27] - 2026-08-27
+
+### Added
+
+- Spend budgets. A new `[budgets]` config section sets money ceilings per
+  session, per UTC day, per agent, and per channel. A turn that starts at or
+  above a hard limit is refused before any provider call with a
+  `budget_exceeded` error naming the scope and the number; a matching
+  `*_warn` threshold raises a one-shot `budget_warning` without stopping the
+  turn. Ceilings are re-checked between iterations within a turn as well, so a
+  single turn with a long tool loop cannot run past one. Spend is persisted to
+  `~/.agentos/state/spend_ledger.db`, so a ceiling survives a gateway restart —
+  a runaway overnight loop cannot be reset by a crash-and-respawn. Nothing is
+  enforced until an operator sets a number.
 
 - `aero-stock-lp` joins the Bankr skill hub. The skill range-LPs Coinbase
   tokenized equities (NVDA, AAPL, GOOGL, META) and AERO/USDC on Aerodrome
@@ -17,7 +49,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `BankrBot/skills`, so it browses and installs through the existing repo half
   of the Bankr source with no new code path.
 
+### Removed
+
+- Three subsystems that shipped in the wheel while being dead or
+  permanently-failing are gone (#362). The `onboard_agent` wizard — the
+  `wizard.start` / `wizard.next` / `wizard.cancel` / `wizard.status` RPC
+  methods plus their state machine — had no caller in the frontend or the CLI
+  and no side effect: its terminal step returned the collected answers and
+  never created an agent, while its hardcoded model list had gone two
+  generations stale. The Agents view already creates agents through
+  `agents.create`. The `canvas` and `nodes` built-in tools validated their
+  `action` argument and then raised `ToolError` unconditionally; no node
+  runtime exists anywhere in the tree to configure, and only
+  `exposed_by_default=False` kept them from failing in front of a model.
+  `tools/visibility.py` no longer exports `filter_by_profile` (returned its
+  input) or `profile_allows_tool` (returned `True`), nor does the dispatch
+  chain run the `ProfilePolicy` that only called them — profile enforcement
+  now has one home in `tools/policy_config.py`. `ToolProfile` and
+  `resolve_profile` stay; they are the live seam.
+
+- The `agentos dist` install inventory no longer advertises built-in tools that
+  are not in the wheel. `bundled_tools` listed `nodes` (deleted above) and
+  `agent` (no such module for some time), so an inventory diff across releases
+  showed capability that was not there. A new parity test asserts every name in
+  `BUNDLED_TOOLS` resolves to a module under `agentos.tools.builtin`.
+
 ### Changed
+
+- `UsageTracker.check_warning()` is removed. It had no callers; the
+  `[budgets]` session ceilings replace it with a configurable, enforced
+  equivalent.
 
 - The Bankr user-skill allowlist — the half that carries skills published from
   a wallet on bankr.bot — is now empty. `stock-premium-lp-manager` was retired
@@ -88,6 +149,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   they were.
 
 ### Security
+
+- Installing a skill from ClawHub no longer unpacks the downloaded zip
+  unbounded. `ClawHubSource.fetch` read every entry into memory with no cap on
+  entry count or uncompressed size, so a few tens of KB of nested deflate — a
+  classic zip bomb — could exhaust the gateway's memory and take the process
+  down. The download is now streamed against a size ceiling — httpx gunzips a
+  `Content-Encoding` body with no limit of its own, so a buffered read could
+  have been filled before any zip cap got a say — and the archive is refused
+  past an entry count, a per-entry size, and a total uncompressed size. Each
+  entry is decompressed in chunks against a running total, so an archive that
+  understates `ZipInfo.file_size` is caught mid-read rather than trusted. A
+  hostile archive also fails closed rather than raising through the installer:
+  an entry flagged encrypted, an unsupported compression method, or a truncated
+  deflate stream reaches the caller as "no bundle", not as an exception that
+  aborts a whole lockfile sync. Entry paths are also checked against
+  Windows-style escapes (`..\`, `C:\`), which
+  `posixpath.normpath` leaves intact; previously only the installer's resolve
+  check caught those. Closes #357.
 
 - `read_file`, `read_spreadsheet` and `grep_search` now mask credentials in the
   content they hand back to the model, and so do the two channels that quote
