@@ -4,6 +4,8 @@ All notable changes to AgentOS will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
 ## [2026.8.28] - 2026-08-28
 
 ### Added
