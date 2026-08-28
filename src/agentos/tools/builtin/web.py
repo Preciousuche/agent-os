@@ -18,7 +18,7 @@ from agentos.sandbox.integration import sandboxed
 from agentos.search.types import SearchProviderError, SearchResult
 from agentos.tools.path_policy import reject_foreign_host_path
 from agentos.tools.registry import tool
-from agentos.tools.ssrf import assert_not_metadata_endpoint
+from agentos.tools.ssrf import assert_not_metadata_endpoint, ssrf_guarded_client
 from agentos.tools.types import ToolError, UnsupportedURLSchemeError, current_tool_context
 
 
@@ -204,14 +204,13 @@ async def http_request(
     if marker is not None:
         return _sensitive_body_block("http_request", marker)
 
-    try:
-        import httpx
-    except ImportError:
-        return "[error] httpx not installed. Run: pip install httpx"
-
     content: bytes | None = body.encode() if body else None
 
-    async with httpx.AsyncClient(timeout=timeout, trust_env=_trust_env()) as client:
+    async with ssrf_guarded_client(
+        rule="metadata",
+        timeout=timeout,
+        trust_env=_trust_env(),
+    ) as client:
         response = await client.request(
             method=method_upper,
             url=url,

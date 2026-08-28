@@ -48,7 +48,7 @@ from agentos.provider.image_generation import (
 from agentos.tools.path_aliases import resolve_workspace_alias
 from agentos.tools.path_policy import reject_foreign_host_path
 from agentos.tools.registry import tool
-from agentos.tools.ssrf import validate_http_url_for_fetch
+from agentos.tools.ssrf import ssrf_guarded_client, validate_http_url_for_fetch
 from agentos.tools.types import (
     CallerKind,
     SafeToolError,
@@ -277,8 +277,6 @@ def _sensitive_media_url_block(tool_name: str, url: str) -> dict | None:
 
 
 async def _fetch_image_url(url: str) -> tuple[bytes, str]:
-    import httpx
-
     def _check_image_url(candidate_url: str) -> None:
         marker = _sensitive_media_url_block("image", candidate_url)
         if marker is not None:
@@ -293,8 +291,11 @@ async def _fetch_image_url(url: str) -> tuple[bytes, str]:
             raise ToolError(str(exc)) from exc
 
     try:
-        async with httpx.AsyncClient(
-            timeout=30.0, follow_redirects=False, trust_env=_trust_env()
+        async with ssrf_guarded_client(
+            rule="fetch",
+            timeout=30.0,
+            follow_redirects=False,
+            trust_env=_trust_env(),
         ) as client:
             current_url = url
             for _redirect_count in range(_MAX_REDIRECTS + 1):

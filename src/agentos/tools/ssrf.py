@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import ipaddress
 import socket
+import typing
 from collections.abc import Iterable
+from typing import Any, Literal
 from urllib.parse import urlparse
+
+import httpcore
+import httpx
 
 from agentos.tools.types import SSRFBlockedError, UnsupportedURLSchemeError
 
@@ -218,3 +223,127 @@ def _is_trusted_fake_ip(addr: IPAddress, trusted_networks: tuple[IPNetwork, ...]
 
 def _blocked_message(hostname: str, addr: IPAddress, reason: str) -> str:
     return f"Blocked: {hostname} resolves to {addr} ({reason})"
+
+
+class ValidatingNetworkBackend(httpcore.AsyncNetworkBackend):
+    """Network backend that resolves and validates hostnames before connecting.
+
+    Presents a DNS-rebinding TOCTOU defense by pinning the validated IP address
+    and connecting directly to it while preserving the original host for TLS
+    handshake (SNI and certificate validation).
+    """
+
+    def __init__(
+        self,
+        rule: Literal["fetch", "metadata"] = "fetch",
+        backend: httpcore.AsyncNetworkBackend | None = None,
+    ) -> None:
+        self._rule = rule
+        self._backend = backend or httpcore.AnyIOBackend()
+
+    async def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options: typing.Iterable[httpcore.SOCKET_OPTION] | None = None,
+    ) -> httpcore.AsyncNetworkStream:
+        clean_host = host.strip().lower().rstrip(".")
+        if clean_host in _METADATA_HOSTNAMES:
+            raise SSRFBlockedError(
+                f"Blocked request to {host}: cloud metadata endpoints serve instance "
+                "credentials and are never a valid agent target."
+            )
+
+        try:
+            infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+        except (socket.gaierror, UnicodeError, ValueError) as exc:
+            raise httpcore.ConnectError(f"Cannot resolve hostname: {host}") from exc
+
+        if not infos:
+            raise httpcore.ConnectError(f"No IP addresses found for hostname: {host}")
+
+        ips: list[str] = []
+        for info in infos:
+            try:
+                ip = info[4][0]
+                if isinstance(ip, str):
+                    ips.append(ip)
+            except IndexError:
+                continue
+
+        for ip in ips:
+            try:
+                addr = ipaddress.ip_address(ip)
+            except ValueError:
+                continue
+
+            if self._rule == "metadata":
+                if _is_metadata_address(addr):
+                    raise SSRFBlockedError(
+                        f"Blocked request to {host}: link-local/metadata addresses serve "
+                        "instance credentials and are never a valid agent target."
+                    )
+            else:
+                block_reason = _hard_block_reason(addr)
+                if block_reason is not None:
+                    raise SSRFBlockedError(_blocked_message(host, addr, block_reason))
+                if _is_trusted_fake_ip(addr, _trusted_fake_ip_cidrs):
+                    continue
+                if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
+                    reason = (
+                        f"reserved/private range; configure [tools].trusted_fake_ip_cidrs "
+                        f"with {RFC2544_FAKE_IP_NETWORK} only if this is fake-IP DNS"
+                        if addr in RFC2544_FAKE_IP_NETWORK
+                        else "private/internal range"
+                    )
+                    raise SSRFBlockedError(_blocked_message(host, addr, reason))
+
+        # Target the first resolved and validated IP literal
+        target_ip = ips[0]
+        return await self._backend.connect_tcp(
+            host=target_ip,
+            port=port,
+            timeout=timeout,
+            local_address=local_address,
+            socket_options=socket_options,
+        )
+
+    async def connect_unix_socket(
+        self,
+        path: str,
+        timeout: float | None = None,
+        socket_options: typing.Iterable[httpcore.SOCKET_OPTION] | None = None,
+    ) -> httpcore.AsyncNetworkStream:
+        return await self._backend.connect_unix_socket(
+            path=path,
+            timeout=timeout,
+            socket_options=socket_options,
+        )
+
+    async def sleep(self, seconds: float) -> None:
+        await self._backend.sleep(seconds)
+
+
+def ssrf_guarded_client(
+    *,
+    rule: Literal["fetch", "metadata"] = "fetch",
+    **kwargs: Any,
+) -> httpx.AsyncClient:
+    """Build a normal AsyncClient and swap in the ValidatingNetworkBackend."""
+    client = httpx.AsyncClient(**kwargs)
+    backend = ValidatingNetworkBackend(rule=rule)
+
+    def _inject(transport: Any) -> None:
+        if isinstance(transport, httpx.AsyncHTTPTransport):
+            if hasattr(transport, "_pool") and hasattr(transport._pool, "_network_backend"):
+                transport._pool._network_backend = backend
+
+    if hasattr(client, "_transport") and client._transport is not None:
+        _inject(client._transport)
+    if hasattr(client, "_mounts") and isinstance(client._mounts, dict):
+        for transport in client._mounts.values():
+            _inject(transport)
+
+    return client

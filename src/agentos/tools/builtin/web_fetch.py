@@ -19,7 +19,7 @@ from agentos.result_budget import (
 )
 from agentos.sandbox.integration import sandboxed
 from agentos.tools.registry import tool
-from agentos.tools.ssrf import validate_http_url_for_fetch
+from agentos.tools.ssrf import ssrf_guarded_client, validate_http_url_for_fetch
 from agentos.tools.types import SSRFBlockedError, current_tool_context
 
 log = structlog.get_logger(__name__)
@@ -223,7 +223,8 @@ async def web_fetch(
     async def _do_fetch(user_agent: str) -> tuple[int, str, str, str]:
         headers = dict(_DEFAULT_HEADERS)
         headers["User-Agent"] = user_agent
-        async with httpx.AsyncClient(
+        async with ssrf_guarded_client(
+            rule="fetch",
             timeout=30.0,
             follow_redirects=False,
             trust_env=_trust_env(),
