@@ -18,6 +18,7 @@ from agentos.agentos_router.controller import (
     derive_prompt_policy,
     derive_thinking_mode,
     normalize_decisions,
+    prompt_hint_locale,
     synthetic_one_hot,
 )
 from agentos.router_tiers import TEXT_TIERS
@@ -135,3 +136,31 @@ def test_high_risk_r2_derives_t3_p2_after_normalize() -> None:
     policy = derive_prompt_policy(probs, flags)
     thinking, policy = normalize_decisions(thinking, policy)
     assert (thinking, policy) == ("T3", "P2")
+
+
+# -- prompt_hint_locale CJK/Latin language detection -------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (None, "en"),
+        ("", "en"),
+        ("Hello, world!", "en"),
+        ("This is a simple English prompt containing no CJK characters.", "en"),
+        ("你好，世界！这是一个纯中文的提示词。", "zh"),
+        ("Explain what the CJK character '中' means in English.", "en"),
+        ("What do '中' and '国' mean in this context?", "en"),
+        ("请解释一下 '中', '国', '人', '民' 几个字在不同语境下的含义。", "zh"),
+        ("中", "en"),  # below absolute threshold of 4 CJK chars
+        ("中国", "en"),  # below absolute threshold of 4 CJK chars
+        ("中国人民", "zh"),  # satisfies threshold of 4 CJK chars and no Latin letters
+        (
+            "中国人民 - This is a long English text talking about Chinese "
+            "people that completely overwhelms the CJK ratio.",
+            "en",
+        ),
+    ],
+)
+def test_prompt_hint_locale(text: str | None, expected: str) -> None:
+    assert prompt_hint_locale(text) == expected

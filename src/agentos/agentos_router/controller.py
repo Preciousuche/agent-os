@@ -141,7 +141,9 @@ def prompt_hint_locale(text: str | None) -> str:
             cjk_count += 1
         elif char.isascii() and char.isalpha():
             latin_count += 1
-    if cjk_count >= 2:
+    # Classify as zh only if there is a minimum absolute presence of CJK characters
+    # and they are not completely overwhelmed by Latin characters.
+    if cjk_count >= 4 and (latin_count == 0 or (cjk_count / latin_count) >= 0.1):
         return "zh"
     return "en"
 
