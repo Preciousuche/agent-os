@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -202,3 +203,144 @@ async def test_email_send_file(tmp_path) -> None:
         assert file_part.get_filename() == "report.txt"
         file_decoded = file_part.get_payload(decode=True)
         assert file_decoded == b"Monthly report content"
+
+
+def test_email_config_fields_validation() -> None:
+    entry = ChannelEntry(
+        imap_server="imap.example.com",
+        imap_username="user@example.com",
+        imap_password="password",
+        smtp_server="smtp.example.com",
+        smtp_username="user@example.com",
+        smtp_password="password",
+        smtp_use_ssl=True,
+        timeout_s=25.0,
+    )
+    assert entry.smtp_use_ssl is True
+    assert entry.timeout_s == 25.0
+
+    config = EmailChannelConfig(smtp_use_ssl=True, timeout_s=25.0)
+    assert config.smtp_use_ssl is True
+    assert config.timeout_s == 25.0
+
+
+@pytest.mark.asyncio
+async def test_email_send_outbound_ssl() -> None:
+    config = EmailChannelConfig(
+        smtp_server="smtp.example.com",
+        smtp_username="agent@example.com",
+        smtp_use_ssl=True,
+        timeout_s=10.0,
+    )
+    channel = EmailChannel(config=config)
+
+    reply = channel.build_reply_message(
+        "Hi",
+        IncomingMessage(sender_id="alice@example.com", channel_id="email", content="Hello"),
+    )
+
+    with patch("smtplib.SMTP_SSL") as mock_smtp_ssl_class:
+        mock_smtp = MagicMock()
+        mock_smtp_ssl_class.return_value = mock_smtp
+
+        await channel.send(reply)
+
+        mock_smtp_ssl_class.assert_called_once_with("smtp.example.com", 587, timeout=10.0)
+        mock_smtp.sendmail.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_email_idle_flow() -> None:
+    config = EmailChannelConfig(
+        imap_server="imap.example.com",
+        imap_username="user@example.com",
+        imap_password="password",
+        timeout_s=5.0,
+    )
+    channel = EmailChannel(config=config)
+    channel._connected = True
+
+    mock_imap = MagicMock()
+    mock_imap.capability.return_value = ("OK", [b"IMAP4rev1 IDLE"])
+
+    mock_imap.readline.side_effect = [
+        b"+ idling\r\n",
+        b"* 1 EXISTS\r\n",
+        b"OK IDLE terminated\r\n",
+    ]
+
+    mock_sock = MagicMock()
+    mock_imap.socket.return_value = mock_sock
+
+    search_call_count = 0
+
+    def mock_search(criteria, charset=None):
+        nonlocal search_call_count
+        search_call_count += 1
+        if search_call_count == 1:
+            return ("OK", [b"1"])
+        else:
+            channel._connected = False
+            return ("OK", [b""])
+
+    mock_imap.search.side_effect = mock_search
+    raw_email = b"From: alice@example.com\r\nSubject: Test\r\nMessage-ID: <123>\r\n\r\nHello IDLE"
+    mock_imap.fetch.return_value = ("OK", [(None, raw_email)])
+
+    select_call_count = 0
+
+    def mock_select(r, w, x, timeout):
+        nonlocal select_call_count
+        select_call_count += 1
+        if select_call_count == 1:
+            return ([mock_sock], [], [])
+        else:
+            channel._connected = False
+            return ([], [], [])
+
+    loop = asyncio.get_running_loop()
+
+    with patch("select.select", side_effect=mock_select):
+        await loop.run_in_executor(None, channel._run_idle, mock_imap, loop)
+
+    assert channel._queue.qsize() == 1
+    queued_msg = await channel._queue.get()
+    assert queued_msg.sender_id == "alice@example.com"
+    assert queued_msg.content == "Hello IDLE"
+
+
+@pytest.mark.asyncio
+async def test_email_idle_unsupported_fallback() -> None:
+    config = EmailChannelConfig(
+        imap_server="imap.example.com",
+        imap_username="user@example.com",
+        imap_password="password",
+        poll_interval_s=1.0,
+    )
+    channel = EmailChannel(config=config)
+    channel._connected = True
+
+    mock_imap = MagicMock()
+    mock_imap.capability.return_value = ("OK", [b"IMAP4rev1"])
+
+    mock_imap.search.side_effect = [("OK", [b"1"]), ("OK", [b""])]
+    raw_email = (
+        b"From: bob@example.com\r\n"
+        b"Subject: Test Fallback\r\n"
+        b"Message-ID: <456>\r\n"
+        b"\r\n"
+        b"Hello Fallback"
+    )
+    mock_imap.fetch.return_value = ("OK", [(None, raw_email)])
+
+    def mock_sleep(seconds):
+        channel._connected = False
+
+    loop = asyncio.get_running_loop()
+    with patch("time.sleep", side_effect=mock_sleep):
+        await loop.run_in_executor(None, channel._run_idle, mock_imap, loop)
+
+    assert channel._queue.qsize() == 1
+    queued_msg = await channel._queue.get()
+    assert queued_msg.sender_id == "bob@example.com"
+    assert queued_msg.content == "Hello Fallback"

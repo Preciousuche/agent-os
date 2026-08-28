@@ -7,8 +7,10 @@ import contextlib
 import email
 import email.utils
 import imaplib
+import select
 import smtplib
 import ssl
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from email.header import decode_header
@@ -65,10 +67,12 @@ class EmailChannelConfig(BaseModel):
     smtp_server: str = ""
     smtp_port: int = 587
     smtp_use_tls: bool = True
+    smtp_use_ssl: bool = False
     smtp_username: str = ""
     smtp_password: str = ""
     allowed_from_addresses: list[str] = Field(default_factory=list)
     poll_interval_s: float = 30.0
+    timeout_s: float = 15.0
 
 
 @dataclass
@@ -179,10 +183,10 @@ class EmailChannel:
             log.error("email.connect_failed", error=str(exc))
             raise ConnectionError(f"Email server connection failed: {exc}") from exc
 
+        self._connected = True
         self._poll_task = asyncio.create_task(
             self._poll_loop(), name=f"email:poll:{self.config.name}"
         )
-        self._connected = True
         log.info("email.started", name=self.config.name)
 
     async def stop(self) -> None:
@@ -269,18 +273,30 @@ class EmailChannel:
     def _validate_credentials(self) -> None:
         imap: imaplib.IMAP4
         if self.config.imap_use_ssl:
-            imap = imaplib.IMAP4_SSL(self.config.imap_server, self.config.imap_port)
+            imap = imaplib.IMAP4_SSL(
+                self.config.imap_server, self.config.imap_port, timeout=self.config.timeout_s
+            )
         else:
-            imap = imaplib.IMAP4(self.config.imap_server, self.config.imap_port)
+            imap = imaplib.IMAP4(
+                self.config.imap_server, self.config.imap_port, timeout=self.config.timeout_s
+            )
         try:
             imap.login(self.config.imap_username, self.config.imap_password)
         finally:
             with contextlib.suppress(Exception):
                 imap.logout()
 
-        smtp = smtplib.SMTP(self.config.smtp_server, self.config.smtp_port)
+        smtp: smtplib.SMTP
+        if self.config.smtp_use_ssl:
+            smtp = smtplib.SMTP_SSL(
+                self.config.smtp_server, self.config.smtp_port, timeout=self.config.timeout_s
+            )
+        else:
+            smtp = smtplib.SMTP(
+                self.config.smtp_server, self.config.smtp_port, timeout=self.config.timeout_s
+            )
         try:
-            if self.config.smtp_use_tls:
+            if self.config.smtp_use_tls and not self.config.smtp_use_ssl:
                 smtp.starttls()
             smtp.login(self.config.smtp_username, self.config.smtp_password)
         finally:
@@ -321,9 +337,17 @@ class EmailChannel:
             part.add_header("Content-Disposition", "attachment", filename=filename)
             mime.attach(part)
 
-        smtp = smtplib.SMTP(self.config.smtp_server, self.config.smtp_port)
+        smtp: smtplib.SMTP
+        if self.config.smtp_use_ssl:
+            smtp = smtplib.SMTP_SSL(
+                self.config.smtp_server, self.config.smtp_port, timeout=self.config.timeout_s
+            )
+        else:
+            smtp = smtplib.SMTP(
+                self.config.smtp_server, self.config.smtp_port, timeout=self.config.timeout_s
+            )
         try:
-            if self.config.smtp_use_tls:
+            if self.config.smtp_use_tls and not self.config.smtp_use_ssl:
                 smtp.starttls()
             smtp.login(self.config.smtp_username, self.config.smtp_password)
             smtp.sendmail(self.config.smtp_username, [recipient], mime.as_string())
@@ -331,60 +355,141 @@ class EmailChannel:
             with contextlib.suppress(Exception):
                 smtp.quit()
 
-    async def _poll_loop(self) -> None:
-        while True:
+    def _enqueue_message(self, incoming: IncomingMessage, loop: asyncio.AbstractEventLoop) -> None:
+        self._last_message_at = datetime.now(UTC)
+        self._last_headers[incoming.sender_id] = {
+            "subject": incoming.metadata.get("subject", ""),
+            "message_id": incoming.metadata.get("native_message_id", ""),
+            "references": incoming.metadata.get("references", ""),
+            "thread_id": incoming.metadata.get("native_chat_id", ""),
+        }
+        loop.call_soon_threadsafe(self._queue.put_nowait, incoming)
+
+    def _fetch_and_enqueue_unseen(
+        self, imap: imaplib.IMAP4, loop: asyncio.AbstractEventLoop
+    ) -> None:
+        imap.select("INBOX")
+        status, response = imap.search(None, "UNSEEN")
+        if status != "OK" or not response[0]:
+            return
+
+        msg_ids = response[0].split()
+        for msg_id in msg_ids:
+            fetch_status, fetch_data = imap.fetch(msg_id, "(RFC822)")
+            if fetch_status != "OK" or not fetch_data or not isinstance(fetch_data[0], tuple):
+                continue
+
+            raw_email = fetch_data[0][1]
+            if isinstance(raw_email, bytes):
+                msg = email.message_from_bytes(raw_email)
+                incoming = self._parse_email_message(msg)
+                if incoming:
+                    self._enqueue_message(incoming, loop)
+                    imap.store(msg_id, "+FLAGS", "\\Seen")
+
+    def _run_idle(self, imap: imaplib.IMAP4, loop: asyncio.AbstractEventLoop) -> None:
+        self._fetch_and_enqueue_unseen(imap, loop)
+
+        has_idle = False
+        try:
+            res, caps = imap.capability()
+            if res == "OK" and caps:
+                caps_str = caps[0].decode("utf-8", errors="replace").upper()
+                has_idle = "IDLE" in caps_str
+        except Exception:
+            log.warning("email.capability_check_failed")
+
+        if not has_idle:
+            log.info("email.idle_unsupported_falling_back_to_poll")
+            while self._connected:
+                self._fetch_and_enqueue_unseen(imap, loop)
+                for _ in range(int(self.config.poll_interval_s)):
+                    if not self._connected:
+                        break
+                    time.sleep(1.0)
+            return
+
+        log.info("email.idle_started")
+        sock = imap.socket()
+        while self._connected:
+            tag = imap._new_tag().decode("ascii")
             try:
-                loop = asyncio.get_running_loop()
-                messages = await loop.run_in_executor(None, self._poll_inbox)
-                for incoming in messages:
-                    self._last_message_at = datetime.now(UTC)
-                    self._last_headers[incoming.sender_id] = {
-                        "subject": incoming.metadata.get("subject", ""),
-                        "message_id": incoming.metadata.get("native_message_id", ""),
-                        "references": incoming.metadata.get("references", ""),
-                        "thread_id": incoming.metadata.get("native_chat_id", ""),
-                    }
-                    await self._queue.put(incoming)
-            except asyncio.CancelledError:
-                break
-            except Exception as exc:
-                log.error("email.poll_failed", error=str(exc))
+                imap.send(f"{tag} IDLE\r\n".encode("ascii"))
+                resp = imap.readline()
+                if not resp.startswith(b"+"):
+                    log.warning("email.idle_rejected", response=resp)
+                    while (
+                        tag.encode("ascii") not in resp
+                        and b"OK" not in resp
+                        and b"BAD" not in resp
+                        and b"NO" not in resp
+                    ):
+                        resp = imap.readline()
+                    time.sleep(self.config.poll_interval_s)
+                    continue
 
-            await asyncio.sleep(self.config.poll_interval_s)
+                new_activity = False
+                while self._connected:
+                    r, w, x = select.select([sock], [], [], 2.0)
+                    if not self._connected:
+                        break
+                    if r:
+                        resp = imap.readline()
+                        if not resp:
+                            raise ConnectionAbortedError("IMAP socket closed during IDLE")
+                        if b"EXISTS" in resp or b"RECENT" in resp or b"FETCH" in resp:
+                            new_activity = True
+                            break
 
-    def _poll_inbox(self) -> list[IncomingMessage]:
+                imap.send(b"DONE\r\n")
+                while True:
+                    resp = imap.readline()
+                    if not resp:
+                        raise ConnectionAbortedError("IMAP socket closed waiting for IDLE response")
+                    if (
+                        tag.encode("ascii") in resp
+                        or b"OK" in resp
+                        or b"BAD" in resp
+                        or b"NO" in resp
+                    ):
+                        break
+
+                if new_activity:
+                    self._fetch_and_enqueue_unseen(imap, loop)
+            except (TimeoutError, OSError) as exc:
+                raise ConnectionError(f"Network error in IDLE: {exc}") from exc
+
+    def _run_inbox_listener(self, loop: asyncio.AbstractEventLoop) -> None:
         imap: imaplib.IMAP4
         if self.config.imap_use_ssl:
-            imap = imaplib.IMAP4_SSL(self.config.imap_server, self.config.imap_port)
+            imap = imaplib.IMAP4_SSL(
+                self.config.imap_server, self.config.imap_port, timeout=self.config.timeout_s
+            )
         else:
-            imap = imaplib.IMAP4(self.config.imap_server, self.config.imap_port)
+            imap = imaplib.IMAP4(
+                self.config.imap_server, self.config.imap_port, timeout=self.config.timeout_s
+            )
 
-        incoming_messages: list[IncomingMessage] = []
         try:
             imap.login(self.config.imap_username, self.config.imap_password)
             imap.select("INBOX")
-            status, response = imap.search(None, "UNSEEN")
-            if status != "OK":
-                return []
-
-            msg_ids = response[0].split()
-            for msg_id in msg_ids:
-                fetch_status, fetch_data = imap.fetch(msg_id, "(RFC822)")
-                if fetch_status != "OK" or not fetch_data or not isinstance(fetch_data[0], tuple):
-                    continue
-
-                raw_email = fetch_data[0][1]
-                if isinstance(raw_email, bytes):
-                    msg = email.message_from_bytes(raw_email)
-                    incoming = self._parse_email_message(msg)
-                    if incoming:
-                        incoming_messages.append(incoming)
-                        imap.store(msg_id, "+FLAGS", "\\Seen")
+            self._run_idle(imap, loop)
         finally:
             with contextlib.suppress(Exception):
                 imap.logout()
 
-        return incoming_messages
+    async def _poll_loop(self) -> None:
+        loop = asyncio.get_running_loop()
+        while self._connected:
+            try:
+                await loop.run_in_executor(None, self._run_inbox_listener, loop)
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                log.error("email.connection_lost", error=str(exc))
+                if not self._connected:
+                    break
+                await asyncio.sleep(5.0)
 
     def _parse_email_message(self, msg: Message) -> IncomingMessage | None:
         sender_header = msg.get("From", "")
@@ -489,7 +594,9 @@ class ChannelEntry(BaseModel):
     smtp_server: str
     smtp_port: int = 587
     smtp_use_tls: bool = True
+    smtp_use_ssl: bool = False
     smtp_username: str
     smtp_password: str
     allowed_from_addresses: list[str] = Field(default_factory=list)
     poll_interval_s: float = 30.0
+    timeout_s: float = 15.0

@@ -1719,10 +1719,12 @@ class EmailChannelEntry(ConfiguredChannelEntry):
     smtp_server: str
     smtp_port: int = 587
     smtp_use_tls: bool = True
+    smtp_use_ssl: bool = False
     smtp_username: str
     smtp_password: str
     allowed_from_addresses: list[str] = Field(default_factory=list)
     poll_interval_s: float = 30.0
+    timeout_s: float = 15.0
 
 
 ChannelConfigEntry = ConfiguredChannelEntry
