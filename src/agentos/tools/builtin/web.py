@@ -8,7 +8,7 @@ import json
 import os
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl, urlparse
+from urllib.parse import parse_qsl, unquote, urlparse
 
 import httpx
 
@@ -53,8 +53,18 @@ def _sensitive_body_marker(body: str | None) -> str | None:
 
 def _sensitive_url_marker(url: str) -> str | None:
     parsed = urlparse(url)
+    if parsed.username:
+        decoded_username = unquote(parsed.username)
+        if secret_literal_marker(decoded_username) is not None:
+            return "sensitive_url_userinfo"
+    if parsed.password:
+        decoded_password = unquote(parsed.password)
+        if secret_literal_marker(decoded_password) is not None:
+            return "sensitive_url_userinfo"
+
     for segment in parsed.path.split("/"):
-        if secret_literal_marker(segment) is not None:
+        decoded_segment = unquote(segment)
+        if secret_literal_marker(decoded_segment) is not None:
             return "sensitive_url_path"
     if not parsed.query:
         return None
