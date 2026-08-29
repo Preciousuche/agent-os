@@ -54,7 +54,7 @@ async def test_ops_add_persists_without_creator_role(tmp_path: Path) -> None:
             session_target=SessionTarget.ISOLATED,
             schedule_kind=ScheduleKind.CRON,
             schedule_value="*/5 * * * *",
-                    )
+        )
 
         reloaded = await store.get(job.id)
 
@@ -195,5 +195,74 @@ async def test_ops_add_every_rejects_zero_seconds(tmp_path: Path) -> None:
                 schedule_kind=ScheduleKind.EVERY,
                 schedule_value="0",
             )
+    finally:
+        await store.close()
+
+
+async def test_ops_add_rejects_invalid_timeout(tmp_path: Path) -> None:
+    store, ops = await _open_ops(tmp_path)
+    try:
+        # timeout_seconds < 1
+        with pytest.raises(ValueError, match="timeout_seconds must be between 1 and 86400"):
+            await ops.add(
+                name="bad-timeout",
+                handler_key="agent_run",
+                payload=make_agent_turn_payload("ping"),
+                session_target=SessionTarget.ISOLATED,
+                schedule_kind=ScheduleKind.CRON,
+                schedule_value="*/5 * * * *",
+                timeout_seconds=0.5,
+            )
+
+        # timeout_seconds > 24h (86400)
+        with pytest.raises(ValueError, match="timeout_seconds must be between 1 and 86400"):
+            await ops.add(
+                name="bad-timeout",
+                handler_key="agent_run",
+                payload=make_agent_turn_payload("ping"),
+                session_target=SessionTarget.ISOLATED,
+                schedule_kind=ScheduleKind.CRON,
+                schedule_value="*/5 * * * *",
+                timeout_seconds=86401.0,
+            )
+
+        # timeout_seconds not a number
+        with pytest.raises(ValueError, match="timeout_seconds must be a number"):
+            await ops.add(
+                name="bad-timeout",
+                handler_key="agent_run",
+                payload=make_agent_turn_payload("ping"),
+                session_target=SessionTarget.ISOLATED,
+                schedule_kind=ScheduleKind.CRON,
+                schedule_value="*/5 * * * *",
+                timeout_seconds="invalid",  # type: ignore[arg-type]
+            )
+    finally:
+        await store.close()
+
+
+async def test_ops_update_rejects_invalid_timeout(tmp_path: Path) -> None:
+    store, ops = await _open_ops(tmp_path)
+    try:
+        job = await ops.add(
+            name="job-to-update",
+            handler_key="agent_run",
+            payload=make_agent_turn_payload("ping"),
+            session_target=SessionTarget.ISOLATED,
+            schedule_kind=ScheduleKind.CRON,
+            schedule_value="*/5 * * * *",
+        )
+
+        # Update timeout_seconds < 1
+        with pytest.raises(ValueError, match="timeout_seconds must be between 1 and 86400"):
+            await ops.update(job.id, timeout_seconds=0.9)
+
+        # Update timeout_seconds > 24h
+        with pytest.raises(ValueError, match="timeout_seconds must be between 1 and 86400"):
+            await ops.update(job.id, timeout_seconds=90000.0)
+
+        # Update timeout_seconds not a number
+        with pytest.raises(ValueError, match="timeout_seconds must be a number"):
+            await ops.update(job.id, timeout_seconds="invalid")
     finally:
         await store.close()

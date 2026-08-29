@@ -92,6 +92,16 @@ def _normalized_tool_policy(
     return policy
 
 
+def _validate_timeout_seconds(val: float | int | Any) -> float:
+    try:
+        f_val = float(val)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"timeout_seconds must be a number, got {val!r}") from exc
+    if f_val < 1.0 or f_val > 86400.0:
+        raise ValueError("timeout_seconds must be between 1 and 86400 (24 hours)")
+    return f_val
+
+
 def _validate_structured_schedule(
     kind: ScheduleKind | str,
     value: str,
@@ -222,6 +232,7 @@ class SchedulerOps:
           * ``0`` → exact timing, no stagger.
           * ``>0`` → explicit fixed offset.
         """
+        timeout_seconds = _validate_timeout_seconds(timeout_seconds)
         now_local = self._now()
         kind, cron_expr = _validate_structured_schedule(schedule_kind, schedule_value)
         schedule_raw = cron_expr
@@ -242,11 +253,7 @@ class SchedulerOps:
         # fall back to ISOLATED instead of failing creation. Headless cron
         # callers (no session context) get an isolated run rather than a hard
         # error.
-        if (
-            session_target == SessionTarget.CURRENT
-            and not session_key
-            and not origin_session_key
-        ):
+        if session_target == SessionTarget.CURRENT and not session_key and not origin_session_key:
             session_target = SessionTarget.ISOLATED
 
         origin_session_key = normalize_origin_session_key(session_target, origin_session_key)
@@ -373,6 +380,9 @@ class SchedulerOps:
                 "ops.update no longer accepts schedule_raw; "
                 "pass schedule_kind + schedule_value instead"
             )
+
+        if "timeout_seconds" in patch:
+            patch["timeout_seconds"] = _validate_timeout_seconds(patch["timeout_seconds"])
 
         for field in ("name", "timeout_seconds", "enabled", "origin_session_key"):
             if field in patch:
