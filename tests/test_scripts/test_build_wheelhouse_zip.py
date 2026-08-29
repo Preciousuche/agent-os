@@ -53,8 +53,7 @@ def test_build_wheel_retries_once_after_transient_uv_failure(monkeypatch, tmp_pa
     monkeypatch.setattr(module, "find_built_wheel", lambda wheel_dir: wheel_path)
 
     assert (
-        module.build_wheel(tmp_path, tmp_path / "wheels", {"UV_CACHE_DIR": "cache"})
-        == wheel_path
+        module.build_wheel(tmp_path, tmp_path / "wheels", {"UV_CACHE_DIR": "cache"}) == wheel_path
     )
     assert len(calls) == 2
 
@@ -180,9 +179,7 @@ def test_python_runtime_asset_name_uses_platform_triple() -> None:
         platform_tag="windows-x64",
     )
 
-    assert macos == (
-        "cpython-3.12.13+20260414-aarch64-apple-darwin-install_only_stripped.tar.gz"
-    )
+    assert macos == ("cpython-3.12.13+20260414-aarch64-apple-darwin-install_only_stripped.tar.gz")
     assert windows == (
         "cpython-3.12.13+20260414-x86_64-pc-windows-msvc-install_only_stripped.tar.gz"
     )
@@ -223,13 +220,12 @@ def test_portable_recommended_wheelhouse_uses_recommended_extra_only(tmp_path: P
     assert str(wheel_path) + "[recommended]" in command
     assert str(wheel_path) + "[recommended,feishu]" not in command
 
+
 def test_release_wheel_allows_tokenjuice_provenance_markdown() -> None:
     module = load_script()
     tokenjuice_provenance = module.TOKENJUICE_PROVENANCE_WHEEL_PATH
     pptx_reference = "agentos/skills/bundled/pptx/references/python_pptx.md"
-    unrelated_skill_reference = (
-        "agentos/skills/bundled/example/references/private-notes.md"
-    )
+    unrelated_skill_reference = "agentos/skills/bundled/example/references/private-notes.md"
     unrelated_doc = "agentos/memory/models/bge_onnx/README.md"
 
     violations = module.forbidden_release_wheel_entries(
@@ -251,16 +247,10 @@ def test_release_wheel_allows_tokenjuice_provenance_markdown() -> None:
 
 def test_release_wheel_allows_router_bundle_provenance_markdown() -> None:
     module = load_script()
-    bundle_provenance = (
-        "agentos/agentos_router/models/pilot_v1/PROVENANCE.md"
-    )
-    other_bundle_doc = (
-        "agentos/agentos_router/models/pilot_v1/NOTES.md"
-    )
+    bundle_provenance = "agentos/agentos_router/models/pilot_v1/PROVENANCE.md"
+    other_bundle_doc = "agentos/agentos_router/models/pilot_v1/NOTES.md"
 
-    violations = module.forbidden_release_wheel_entries(
-        (bundle_provenance, other_bundle_doc)
-    )
+    violations = module.forbidden_release_wheel_entries((bundle_provenance, other_bundle_doc))
 
     # Router model bundles may ship a PROVENANCE.md so attribution travels
     # with the weights; unrelated bundle markdown stays forbidden.
@@ -328,9 +318,7 @@ def test_real_bundled_skill_markdown_passes_release_guard() -> None:
     if not bundled.is_dir():
         pytest.skip("bundled skills not present in this checkout")
 
-    relative_paths = sorted(
-        path.relative_to(bundled).as_posix() for path in bundled.rglob("*.md")
-    )
+    relative_paths = sorted(path.relative_to(bundled).as_posix() for path in bundled.rglob("*.md"))
     wheel_names = tuple(
         f"agentos/skills/bundled/{rel}"
         for rel in relative_paths
@@ -348,9 +336,7 @@ def test_release_wheel_allows_dist_info_license_files() -> None:
     license_plain = "use_agent_os-2026.7.15.dist-info/licenses/NOTICE"
     stray_md = "use_agent_os-2026.7.15.dist-info/STRAY.md"
 
-    violations = module.forbidden_release_wheel_entries(
-        (license_md, license_plain, stray_md)
-    )
+    violations = module.forbidden_release_wheel_entries((license_md, license_plain, stray_md))
 
     assert license_md not in violations
     assert license_plain not in violations
@@ -415,8 +401,7 @@ def test_built_wheel_packages_hydrated_minilm_onnx(tmp_path: Path) -> None:
     against a non-hydrated LFS checkout silently shipping a pointer."""
     module = load_script()
     minilm_dir = (
-        REPO_ROOT / "src" / "agentos" / "memory" / "models" / "embeddings"
-        / "all-MiniLM-L6-v2-int8"
+        REPO_ROOT / "src" / "agentos" / "memory" / "models" / "embeddings" / "all-MiniLM-L6-v2-int8"
     )
     if not minilm_dir.is_dir():
         pytest.skip("MiniLM export not present in this checkout")
@@ -452,9 +437,7 @@ def test_built_wheel_packages_hydrated_pilot_bundle(tmp_path: Path) -> None:
     strategy, so a missing or LFS-pointer model.onnx silently degrades every
     turn to pilot_unavailable. Mirrors the MiniLM size/pointer guard."""
     module = load_script()
-    pilot_dir = (
-        REPO_ROOT / "src" / "agentos" / "agentos_router" / "models" / "pilot_v1"
-    )
+    pilot_dir = REPO_ROOT / "src" / "agentos" / "agentos_router" / "models" / "pilot_v1"
     if not pilot_dir.is_dir():
         pytest.skip("pilot_v1 bundle not present in this checkout")
 
@@ -559,7 +542,7 @@ def test_install_scripts_install_from_local_wheelhouse_and_run_onboarding() -> N
     )
 
     assert 'PACKAGE_DIR="${SCRIPT_DIR}/packages"' in sh_script
-    assert 'REQUIRED_PYTHON_MINOR=12' in sh_script
+    assert "REQUIRED_PYTHON_MINOR=12" in sh_script
     assert "uv tool install" in sh_script
     assert '--find-links "${PACKAGE_DIR}"' in sh_script
     assert '"${PACKAGE_DIR}/use_agent_os-0.1.0-py3-none-any.whl[recommended]"' in sh_script
@@ -601,23 +584,13 @@ def test_start_scripts_use_bundled_python_runtime() -> None:
         'portable/${RELEASE_ID}}"' in sh_script
     )
     assert 'if [[ -z "${AGENTOS_GATEWAY_CONFIG_PATH:-}" ]]; then' in sh_script
+    assert 'export AGENTOS_GATEWAY_CONFIG_PATH="${PORTABLE_DATA_DIR}/config.toml"' in sh_script
     assert (
-        'export AGENTOS_GATEWAY_CONFIG_PATH="${PORTABLE_DATA_DIR}/config.toml"'
-        in sh_script
-    )
-    assert (
-        'if [[ -z "${AGENTOS_LLM_API_KEY:-}" && -n "${OPENROUTER_API_KEY:-}" ]]; then'
-        in sh_script
+        'if [[ -z "${AGENTOS_LLM_API_KEY:-}" && -n "${OPENROUTER_API_KEY:-}" ]]; then' in sh_script
     )
     assert 'export AGENTOS_STATE_DIR="${PORTABLE_DATA_DIR}"' in sh_script
-    assert (
-        'export AGENTOS_GATEWAY_STATE_DIR="${AGENTOS_STATE_DIR}/state"'
-        in sh_script
-    )
-    assert (
-        'export AGENTOS_GATEWAY_WORKSPACE_DIR="${AGENTOS_STATE_DIR}/workspace"'
-        in sh_script
-    )
+    assert 'export AGENTOS_GATEWAY_STATE_DIR="${AGENTOS_STATE_DIR}/state"' in sh_script
+    assert 'export AGENTOS_GATEWAY_WORKSPACE_DIR="${AGENTOS_STATE_DIR}/workspace"' in sh_script
     assert 'mkdir -p "${AGENTOS_STATE_DIR}"' in sh_script
     assert '"${PYTHON_BIN}" -m venv --without-pip "${VENV_DIR}"' in sh_script
     assert "-m pip install" not in sh_script
@@ -628,8 +601,7 @@ def test_start_scripts_use_bundled_python_runtime() -> None:
         '-n "${OPENROUTER_API_KEY:-}" ]]; then' in sh_script
     )
     assert (
-        '"${AGENTOS_BIN}" "${AGENTOS_MODULE[@]}" onboard \\\n'
-        "    --provider openrouter" in sh_script
+        '"${AGENTOS_BIN}" "${AGENTOS_MODULE[@]}" onboard \\\n    --provider openrouter' in sh_script
     )
     assert "--api-key-env OPENROUTER_API_KEY" in sh_script
     assert "--minimal" in sh_script
@@ -640,9 +612,7 @@ def test_start_scripts_use_bundled_python_runtime() -> None:
     assert "else" in sh_script
     assert 'CONSOLE_LOG="${AGENTOS_STATE_DIR}/logs/gateway-console.log"' in sh_script
     assert 'tee -a "${CONSOLE_LOG}"' in sh_script
-    assert sh_script.index("if [[ -t 1 ]]; then") < sh_script.index(
-        'tee -a "${CONSOLE_LOG}"'
-    )
+    assert sh_script.index("if [[ -t 1 ]]; then") < sh_script.index('tee -a "${CONSOLE_LOG}"')
     assert sh_script.index(
         'export AGENTOS_GATEWAY_CONFIG_PATH="${PORTABLE_DATA_DIR}/config.toml"'
     ) < sh_script.index('"${AGENTOS_BIN}" "${AGENTOS_MODULE[@]}" onboard')
@@ -658,15 +628,11 @@ def test_start_scripts_use_bundled_python_runtime() -> None:
     assert '$env:PATH = "$VenvDir\\Scripts;$env:PATH"' in ps_script
     assert 'Join-Path $VenvBase "AgentOS\\portable\\$ReleaseId"' in ps_script
     assert (
-        "$env:AGENTOS_GATEWAY_CONFIG_PATH = Join-Path $PortableDataDir 'config.toml'"
-        in ps_script
+        "$env:AGENTOS_GATEWAY_CONFIG_PATH = Join-Path $PortableDataDir 'config.toml'" in ps_script
     )
     assert "$env:AGENTOS_LLM_API_KEY = $env:OPENROUTER_API_KEY" in ps_script
     assert "$env:AGENTOS_STATE_DIR = $PortableDataDir" in ps_script
-    assert (
-        "$env:AGENTOS_GATEWAY_STATE_DIR = Join-Path "
-        "$env:AGENTOS_STATE_DIR 'state'" in ps_script
-    )
+    assert "$env:AGENTOS_GATEWAY_STATE_DIR = Join-Path $env:AGENTOS_STATE_DIR 'state'" in ps_script
     assert (
         "$env:AGENTOS_GATEWAY_WORKSPACE_DIR = Join-Path "
         "$env:AGENTOS_STATE_DIR 'workspace'" in ps_script
@@ -695,7 +661,7 @@ def test_start_scripts_use_bundled_python_runtime() -> None:
     assert "& $VenvPython @AgentOSArgs gateway run" in ps_script
     assert "$ConsoleLog = Join-Path $LogDir 'gateway-console.log'" in ps_script
     assert "$PreviousErrorActionPreference = $ErrorActionPreference" in ps_script
-    assert "$ErrorActionPreference = \"Continue\"" in ps_script
+    assert '$ErrorActionPreference = "Continue"' in ps_script
     assert "$_ -is [System.Management.Automation.ErrorRecord]" in ps_script
     assert "Tee-Object -FilePath $ConsoleLog -Append" in ps_script
     assert ps_script.index("if (-not $OutputRedirected) {") < ps_script.index(
@@ -705,8 +671,7 @@ def test_start_scripts_use_bundled_python_runtime() -> None:
         "$env:AGENTOS_GATEWAY_CONFIG_PATH = Join-Path $PortableDataDir 'config.toml'"
     ) < ps_script.index("& $VenvPython @AgentOSArgs onboard")
     assert ps_script.index(
-        "$env:AGENTOS_GATEWAY_STATE_DIR = Join-Path "
-        "$env:AGENTOS_STATE_DIR 'state'"
+        "$env:AGENTOS_GATEWAY_STATE_DIR = Join-Path $env:AGENTOS_STATE_DIR 'state'"
     ) < ps_script.index("& $VenvPython @AgentOSArgs onboard")
 
     assert cmd_script == (
@@ -732,9 +697,7 @@ def test_install_script_reexecs_under_bash_before_pipefail() -> None:
 
     assert script.startswith('#!/bin/sh\nif [ -z "${BASH_VERSION:-}" ]; then')
     assert 'exec /usr/bin/env bash "$0" "$@"' in script
-    assert script.index('exec /usr/bin/env bash "$0" "$@"') < script.index(
-        "set -euo pipefail"
-    )
+    assert script.index('exec /usr/bin/env bash "$0" "$@"') < script.index("set -euo pipefail")
 
 
 def test_render_readme_is_platform_specific_for_windows_portable() -> None:
@@ -883,9 +846,7 @@ def test_prepare_portable_release_tree_includes_runtime_and_start_scripts(tmp_pa
     assert (release_root / "start.sh").is_file()
     assert (release_root / "start.ps1").is_file()
     assert "agentos.cli.main" in (release_root / "start.sh").read_text(encoding="utf-8")
-    assert "agentos.cli.main" in (release_root / "start.ps1").read_text(
-        encoding="utf-8"
-    )
+    assert "agentos.cli.main" in (release_root / "start.ps1").read_text(encoding="utf-8")
     assert not (release_root / "Start AgentOS.cmd").exists()
     assert (release_root / "LICENSE").is_file()
     assert (release_root / "THIRD_PARTY_NOTICES.md").is_file()
@@ -978,7 +939,7 @@ def test_prepare_windows_portable_release_tree_includes_double_click_launcher(
     cli = release_root / "agentos.cmd"
     assert cli.is_file()
     cli_text = cli.read_text(encoding="utf-8")
-    assert "start.ps1\" -Cli %*" in cli_text
+    assert 'start.ps1" -Cli %*' in cli_text
     shell = release_root / "AgentOS Shell.cmd"
     assert shell.is_file()
     shell_text = shell.read_text(encoding="utf-8")
@@ -1077,8 +1038,7 @@ def test_create_zip_preserves_runtime_executable_mode(tmp_path: Path) -> None:
 
     with ZipFile(zip_path) as archive:
         python_info = archive.getinfo(
-            "AgentOS-0.1.0-macos-arm64-py312-recommended-portable/"
-            "runtime/python/bin/python3"
+            "AgentOS-0.1.0-macos-arm64-py312-recommended-portable/runtime/python/bin/python3"
         )
 
     assert stat.S_IMODE(python_info.external_attr >> 16) & stat.S_IXUSR
@@ -1134,7 +1094,7 @@ def test_release_workflow_publishes_windows_portable_zip_and_wheel() -> None:
     assert "--bundle-python-runtime" in workflow
     assert "expected one versioned portable zip" in workflow
     assert "expected one versioned wheel" in workflow
-    assert "manifest[\"portable\"] is True" in workflow
+    assert 'manifest["portable"] is True' in workflow
     assert "SHA256SUMS" in workflow
     assert "manifest.version" in workflow
     assert "GH_REPO: ${{ github.repository }}" in workflow
@@ -1146,14 +1106,14 @@ def test_release_workflow_publishes_windows_portable_zip_and_wheel() -> None:
     assert "dist/*.zip dist/*.zip.sha256 dist/SHA256SUMS" not in workflow
     assert "Git LFS pointer leaked into wheel" in workflow
     assert "Verify GitHub Release assets" in workflow
-    assert "release\", \"delete-asset\", tag, name, \"--yes\"" in workflow
-    assert "name.endswith(\".sha256\")" in workflow
+    assert 'release", "delete-asset", tag, name, "--yes"' in workflow
+    assert 'name.endswith(".sha256")' in workflow
     assert '["gh", "release", "view", tag, "--json", "assets"]' in workflow
     assert "Unexpected GitHub Release assets" in workflow
-    assert "\"unexpected\": unexpected" in workflow
+    assert '"unexpected": unexpected' in workflow
     assert "zip_path.stem" not in workflow
     assert "archive_roots =" in workflow
-    assert "root = archive_roots[0] + \"/\"" in workflow
+    assert 'root = archive_roots[0] + "/"' in workflow
 
 
 def test_release_workflow_publishes_from_version_tags() -> None:
@@ -1168,3 +1128,6 @@ def test_release_workflow_publishes_from_version_tags() -> None:
     assert "github.event.inputs.tag" in workflow
     assert "github.event_name == 'push' || github.event.inputs.tag != ''" in workflow
     assert "TAG: ${{ env.RELEASE_TAG }}" in workflow
+
+
+# Force-trigger release packaging CI contracts check.
