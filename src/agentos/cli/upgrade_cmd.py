@@ -84,16 +84,26 @@ def _run_upgrade_subprocess(
     leave a background zombie.
     """
 
-    start_new_session = os.name != "nt"
     try:
-        proc = subprocess.Popen(  # noqa: S603 - argv built internally
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=env,
-            start_new_session=start_new_session,
-        )
+        if os.name == "nt":
+            creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200)
+            proc = subprocess.Popen(  # noqa: S603 - argv built internally
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+                creationflags=creationflags,
+            )
+        else:
+            proc = subprocess.Popen(  # noqa: S603 - argv built internally
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+                start_new_session=True,
+            )
     except OSError as exc:
         return UpgradeRunResult(
             ok=False, timed_out=False, returncode=None, stdout="", stderr=str(exc)
@@ -103,7 +113,20 @@ def _run_upgrade_subprocess(
         stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         _kill_process_group(proc)
-        stdout, stderr = proc.communicate()
+        try:
+            stdout, stderr = proc.communicate(timeout=5.0)
+        except subprocess.TimeoutExpired as exc:
+            stdout_data = exc.stdout or ""
+            stderr_data = exc.stderr or ""
+            if isinstance(stdout_data, bytes):
+                stdout = stdout_data.decode("utf-8", errors="replace")
+            else:
+                stdout = stdout_data
+            if isinstance(stderr_data, bytes):
+                stderr = stderr_data.decode("utf-8", errors="replace")
+            else:
+                stderr = stderr_data
+            proc.poll()
         return UpgradeRunResult(
             ok=False,
             timed_out=True,
@@ -123,7 +146,16 @@ def _run_upgrade_subprocess(
 
 def _kill_process_group(proc: subprocess.Popen[str]) -> None:
     if os.name == "nt":
-        proc.kill()
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=True,
+                timeout=5.0,
+            )
+        except Exception:
+            proc.kill()
         return
     try:
         pgid = os.getpgid(proc.pid)  # type: ignore[attr-defined]
@@ -364,8 +396,7 @@ def upgrade_command(
     new_version = _installed_version_via(sys.executable, env=env) or "unknown"
     console.print(f"Upgraded: {__version__} → {new_version}")
     console.print(
-        "[dim]Config migrations (with an automatic timestamped backup) run at "
-        "gateway start.[/dim]"
+        "[dim]Config migrations (with an automatic timestamped backup) run at gateway start.[/dim]"
     )
 
     if no_restart:

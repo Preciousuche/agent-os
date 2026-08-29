@@ -306,3 +306,144 @@ def test_upgrade_failure_exits_one(monkeypatch: pytest.MonkeyPatch) -> None:
     result = runner.invoke(_app(), ["upgrade"])
     assert result.exit_code == 1
     assert "Upgrade failed" in result.stdout
+
+
+# --- _kill_process_group ---------------------------------------------------
+
+
+def test_kill_process_group_windows_uses_taskkill(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakeProc:
+        pid = 12345
+
+        def kill(self) -> None:
+            raise AssertionError("kill() should not be called if taskkill succeeds")
+
+    executed_cmd: list[str] = []
+
+    def _fake_run(cmd: list[str], **kwargs: Any) -> Any:
+        executed_cmd.extend(cmd)
+        return None
+
+    monkeypatch.setattr("os.name", "nt")
+    monkeypatch.setattr("subprocess.run", _fake_run)
+
+    fake_proc = _FakeProc()
+    upgrade_cmd._kill_process_group(fake_proc)  # type: ignore[arg-type]
+    assert executed_cmd == ["taskkill", "/PID", "12345", "/T", "/F"]
+
+
+def test_kill_process_group_windows_fallback_to_kill(monkeypatch: pytest.MonkeyPatch) -> None:
+    killed = {"called": False}
+
+    class _FakeProc:
+        pid = 12345
+
+        def kill(self) -> None:
+            killed["called"] = True
+
+    def _failing_run(*args: Any, **kwargs: Any) -> Any:
+        raise OSError("taskkill not found")
+
+    monkeypatch.setattr("os.name", "nt")
+    monkeypatch.setattr("subprocess.run", _failing_run)
+
+    fake_proc = _FakeProc()
+    upgrade_cmd._kill_process_group(fake_proc)  # type: ignore[arg-type]
+    assert killed["called"] is True
+
+
+def test_run_upgrade_subprocess_windows_timeout_success_on_second_communicate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+
+    class MockPopen:
+        last_kwargs: dict[str, Any] = {}
+
+        def __init__(self, command: list[str], **kwargs: Any) -> None:
+            MockPopen.last_kwargs = kwargs
+            self.pid = 9999
+            self.returncode = None
+            self.args = command
+            self.communicate_calls: list[float | None] = []
+
+        def communicate(self, timeout: float | None = None) -> tuple[str, str]:
+            self.communicate_calls.append(timeout)
+            if len(self.communicate_calls) == 1:
+                raise subprocess.TimeoutExpired(self.args, timeout)
+            else:
+                self.returncode = -15
+                return "stdout after kill", "stderr after kill"
+
+    monkeypatch.setattr("os.name", "nt")
+    monkeypatch.setattr(subprocess, "Popen", MockPopen)
+
+    taskkill_called = []
+
+    def _fake_run(cmd: list[str], **kwargs: Any) -> Any:
+        taskkill_called.append(cmd)
+        return None
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    result = upgrade_cmd._run_upgrade_subprocess(["dummy_cmd"], env={}, timeout=10.0)
+
+    expected_flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200)
+    assert MockPopen.last_kwargs.get("creationflags") == expected_flags
+    assert taskkill_called == [["taskkill", "/PID", "9999", "/T", "/F"]]
+    assert result.ok is False
+    assert result.timed_out is True
+    assert result.returncode == -15
+    assert result.stdout == "stdout after kill"
+    assert result.stderr == "stderr after kill"
+
+
+def test_run_upgrade_subprocess_windows_timeout_secondary_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+
+    class MockPopen:
+        last_kwargs: dict[str, Any] = {}
+
+        def __init__(self, command: list[str], **kwargs: Any) -> None:
+            MockPopen.last_kwargs = kwargs
+            self.pid = 9999
+            self.returncode = None
+            self.args = command
+            self.communicate_calls: list[float | None] = []
+
+        def communicate(self, timeout: float | None = None) -> tuple[str, str]:
+            self.communicate_calls.append(timeout)
+            if len(self.communicate_calls) == 1:
+                raise subprocess.TimeoutExpired(self.args, timeout)
+            else:
+                raise subprocess.TimeoutExpired(
+                    self.args, timeout, output="secondary stdout", stderr="secondary stderr"
+                )
+
+        def poll(self) -> int | None:
+            self.returncode = -9
+            return self.returncode
+
+    monkeypatch.setattr("os.name", "nt")
+    monkeypatch.setattr(subprocess, "Popen", MockPopen)
+
+    taskkill_called = []
+
+    def _fake_run(cmd: list[str], **kwargs: Any) -> Any:
+        taskkill_called.append(cmd)
+        return None
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    result = upgrade_cmd._run_upgrade_subprocess(["dummy_cmd"], env={}, timeout=10.0)
+
+    expected_flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200)
+    assert MockPopen.last_kwargs.get("creationflags") == expected_flags
+    assert taskkill_called == [["taskkill", "/PID", "9999", "/T", "/F"]]
+    assert result.ok is False
+    assert result.timed_out is True
+    assert result.returncode == -9
+    assert result.stdout == "secondary stdout"
+    assert result.stderr == "secondary stderr"
