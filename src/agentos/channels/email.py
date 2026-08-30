@@ -788,9 +788,18 @@ def _body_text(parsed: EmailMessage) -> str:
 
 
 def _merge_references(parsed: EmailMessage, message_id: str) -> str:
-    existing = (parsed.get("References") or "").split()
-    if message_id:
-        existing.append(f"<{message_id}>")
+    raw_refs = (parsed.get("References") or "").split()
+    if not raw_refs:
+        raw_refs = (parsed.get("In-Reply-To") or "").split()
+
+    existing: list[str] = []
+    for ref in raw_refs:
+        clean = ref.strip().strip("<>")
+        if clean:
+            existing.append(f"<{clean}>")
+    clean_id = (message_id or "").strip().strip("<>")
+    if clean_id:
+        existing.append(f"<{clean_id}>")
     return " ".join(dict.fromkeys(existing))
 
 

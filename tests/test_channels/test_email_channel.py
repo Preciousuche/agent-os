@@ -16,6 +16,7 @@ from agentos.channels.contract import ChannelSendStatus, run_channel_contract
 from agentos.channels.email import (
     EmailChannel,
     EmailChannelConfig,
+    _merge_references,
     html_to_text,
     is_automated,
     normalize_address,
@@ -310,6 +311,55 @@ async def test_send_composes_threading_headers(monkeypatch: pytest.MonkeyPatch) 
     assert outbound["References"] == "<m1@example.com>"
     assert normalize_address(outbound["From"]) == "agent@example.com"
     assert outbound.get_content().strip() == "the answer"
+
+
+def test_merge_references_falls_back_to_in_reply_to() -> None:
+    msg = EmailMessage()
+    msg["Message-ID"] = "<reply-102@example.com>"
+    msg["In-Reply-To"] = "<root-001@example.com>"
+
+    merged = _merge_references(msg, "reply-102@example.com")
+    assert merged == "<root-001@example.com> <reply-102@example.com>"
+
+
+def test_merge_references_with_existing_references() -> None:
+    msg = EmailMessage()
+    msg["Message-ID"] = "<reply-103@example.com>"
+    msg["In-Reply-To"] = "<reply-102@example.com>"
+    msg["References"] = "<root-001@example.com> <reply-102@example.com>"
+
+    merged = _merge_references(msg, "reply-103@example.com")
+    assert merged == "<root-001@example.com> <reply-102@example.com> <reply-103@example.com>"
+
+
+def test_merge_references_root_message_without_references_or_in_reply_to() -> None:
+    msg = EmailMessage()
+    msg["Message-ID"] = "<root-001@example.com>"
+
+    merged = _merge_references(msg, "root-001@example.com")
+    assert merged == "<root-001@example.com>"
+
+
+async def test_send_composes_threading_headers_when_inbound_lacks_references(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    channel = EmailChannel(config=_config())
+    inbound = channel._to_incoming(
+        _raw(
+            message_id="m2@example.com",
+            extra_headers={"In-Reply-To": "<m1@example.com>"},
+        )
+    )
+    assert inbound is not None
+    sent: list[EmailMessage] = []
+    monkeypatch.setattr(channel, "_smtp_send", sent.append)
+
+    await channel.send(channel.build_reply_message("reply body", inbound))
+
+    assert len(sent) == 1
+    outbound = sent[0]
+    assert outbound["In-Reply-To"] == "<m2@example.com>"
+    assert outbound["References"] == "<m1@example.com> <m2@example.com>"
 
 
 async def test_send_resolves_the_recipient_from_the_thread_cache(
