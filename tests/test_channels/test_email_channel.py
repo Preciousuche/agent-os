@@ -382,9 +382,11 @@ class _FakeIMAP:
         self._raw = raw
         self._size = len(raw) if size is None else size
         self.stored: list[tuple[str, str, str]] = []
+        self.selected_folder: str | None = None
         self.closed = False
 
     def select(self, folder: str) -> tuple[str, list[bytes]]:
+        self.selected_folder = folder
         return "OK", [b"1"]
 
     def search(self, charset: Any, criteria: str) -> tuple[str, list[bytes]]:
@@ -417,6 +419,28 @@ def test_poll_parses_and_marks_seen(monkeypatch: pytest.MonkeyPatch) -> None:
     assert [m.sender_id for m in messages] == ["owner@example.com"]
     assert fake.stored == [("7", "+FLAGS", "\\Seen")]
     assert fake.closed is True
+
+
+def test_quote_imap_mailbox() -> None:
+    from agentos.channels.email import _quote_imap_mailbox
+
+    assert _quote_imap_mailbox("INBOX") == "INBOX"
+    assert _quote_imap_mailbox("") == "INBOX"
+    assert _quote_imap_mailbox("Sent Items") == '"Sent Items"'
+    assert _quote_imap_mailbox('"Already Quoted"') == '"Already Quoted"'
+    assert _quote_imap_mailbox("'Single Quoted'") == "'Single Quoted'"
+    assert _quote_imap_mailbox("Archive/2026 Projects") == '"Archive/2026 Projects"'
+
+
+def test_poll_quotes_mailbox_with_spaces(monkeypatch: pytest.MonkeyPatch) -> None:
+    channel = EmailChannel(config=_config(imap_folder="Sent Items"))
+    raw = _raw().as_bytes()
+    fake = _FakeIMAP(raw)
+    monkeypatch.setattr(channel, "_imap_connect", lambda: fake)
+
+    channel._fetch_unseen()
+
+    assert fake.selected_folder == '"Sent Items"'
 
 
 def test_poll_skips_a_message_larger_than_the_cap(monkeypatch: pytest.MonkeyPatch) -> None:

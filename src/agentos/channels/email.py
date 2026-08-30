@@ -451,7 +451,7 @@ class EmailChannel:
 
         client = self._imap_connect()
         try:
-            client.select(self.config.imap_folder)
+            client.select(_quote_imap_mailbox(self.config.imap_folder))
             status, data = client.search(None, "UNSEEN")
             if status != "OK":
                 raise RuntimeError(f"IMAP search failed: {status}")
@@ -814,6 +814,19 @@ def _parse_rfc822_size(data: Any) -> int | None:
         if match:
             return int(match.group(1))
     return None
+
+
+def _quote_imap_mailbox(name: str) -> str:
+    """Quote an IMAP mailbox name per RFC 3501 if it contains whitespace or special chars."""
+    raw = (name or "").strip()
+    if not raw:
+        return "INBOX"
+    if (raw.startswith('"') and raw.endswith('"')) or (raw.startswith("'") and raw.endswith("'")):
+        return raw
+    if any(ch in raw for ch in ' \t()[]{"%*\\'):
+        escaped = raw.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped}"'
+    return raw
 
 
 __all__ = [
