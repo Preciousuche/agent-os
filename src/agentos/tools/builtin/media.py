@@ -308,9 +308,13 @@ async def _fetch_image_url(url: str) -> tuple[bytes, str]:
                 if resp.status_code not in {301, 302, 303, 307, 308}:
                     break
                 location = resp.headers.get("location")
-                await resp.aclose()
                 if not location:
-                    break
+                    await resp.aclose()
+                    raise ToolError(
+                        f"Redirect response ({resp.status_code}) from {current_url} "
+                        "missing Location header"
+                    )
+                await resp.aclose()
                 current_url = urljoin(str(resp.url), location)
             else:
                 raise ToolError(f"Too many redirects (>{_MAX_REDIRECTS})")
