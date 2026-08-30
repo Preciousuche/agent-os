@@ -168,6 +168,19 @@ def normalize_address(value: str) -> str:
     return address.strip().lower()
 
 
+def _is_email_address(value: str | None) -> bool:
+    """Return True when ``value`` looks like a plain email address.
+
+    Used to decide whether an outbound ``reply_to`` is a recipient address
+    (scheduler/heartbeat delivery) rather than a thread key.
+    """
+
+    if not value:
+        return False
+    _, address = email.utils.parseaddr(value or "")
+    return bool(address) and "@" in address
+
+
 def sender_allowed(sender: str, allowlist: list[str] | tuple[str, ...]) -> bool:
     """Return True when ``sender`` matches the fail-closed allowlist.
 
@@ -634,9 +647,16 @@ class EmailChannel:
     def _resolve_target(self, message: OutgoingMessage) -> tuple[str, str, str, str]:
         """Return ``(to, subject, in_reply_to, references)`` for an outbound send."""
 
-        thread = self._threads.get((message.reply_to or "").strip())
+        raw_reply_to = (message.reply_to or "").strip()
+        thread = self._threads.get(raw_reply_to)
         metadata = message.metadata or {}
-        to_address = str(metadata.get("to") or (thread.to_address if thread else ""))
+        to_candidate = (
+            metadata.get("to")
+            or metadata.get("recipient")
+            or (thread.to_address if thread else None)
+            or (raw_reply_to if _is_email_address(raw_reply_to) else None)
+        )
+        to_address = str(to_candidate or "").strip()
         if not to_address:
             raise ValueError("email.send has no recipient for reply_to")
         subject = str(metadata.get("subject") or "").strip()

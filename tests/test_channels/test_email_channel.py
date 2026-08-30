@@ -335,6 +335,92 @@ async def test_send_without_a_known_thread_is_refused() -> None:
         await channel.send(OutgoingMessage(content="ping", reply_to="unknown"))
 
 
+async def test_send_resolves_recipient_from_metadata_recipient(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The message tool sets metadata['recipient'] on outbound sends."""
+
+    channel = EmailChannel(config=_config())
+    sent: list[EmailMessage] = []
+    monkeypatch.setattr(channel, "_smtp_send", sent.append)
+
+    await channel.send(
+        OutgoingMessage(
+            content="report",
+            reply_to="colleague@example.com",
+            metadata={"recipient": "colleague@example.com"},
+        )
+    )
+
+    assert len(sent) == 1
+    assert sent[0]["To"] == "colleague@example.com"
+    assert sent[0].get_content().strip() == "report"
+
+
+async def test_send_resolves_recipient_from_direct_address_in_reply_to(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Scheduler cron and heartbeat delivery pass a direct email in reply_to."""
+
+    channel = EmailChannel(config=_config())
+    sent: list[EmailMessage] = []
+    monkeypatch.setattr(channel, "_smtp_send", sent.append)
+
+    await channel.send(OutgoingMessage(content="alert", reply_to="alerts@example.com"))
+
+    assert len(sent) == 1
+    assert sent[0]["To"] == "alerts@example.com"
+    assert sent[0].get_content().strip() == "alert"
+
+
+async def test_send_recipient_resolution_precedence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Precedence is: metadata['to'] > metadata['recipient'] > thread table > reply_to address."""
+
+    channel = EmailChannel(config=_config())
+    assert channel._to_incoming(_raw()) is not None  # registers m1@example.com -> owner@example.com
+
+    sent: list[EmailMessage] = []
+    monkeypatch.setattr(channel, "_smtp_send", sent.append)
+
+    # 1. metadata['to'] beats metadata['recipient'], thread table, and reply_to
+    await channel.send(
+        OutgoingMessage(
+            content="test 1",
+            reply_to="m1@example.com",
+            metadata={
+                "to": "explicit-to@example.com",
+                "recipient": "recipient-meta@example.com",
+            },
+        )
+    )
+    assert sent[-1]["To"] == "explicit-to@example.com"
+
+    # 2. metadata['recipient'] beats thread table and reply_to
+    await channel.send(
+        OutgoingMessage(
+            content="test 2",
+            reply_to="m1@example.com",
+            metadata={"recipient": "recipient-meta@example.com"},
+        )
+    )
+    assert sent[-1]["To"] == "recipient-meta@example.com"
+
+    # 3. Thread table beats reply_to address even if reply_to looks like an address
+    # m1@example.com in thread table has to_address = owner@example.com
+    await channel.send(OutgoingMessage(content="test 3", reply_to="m1@example.com"))
+    assert sent[-1]["To"] == "owner@example.com"
+
+    # 4. reply_to is used when it parses as an address and not in thread table
+    await channel.send(OutgoingMessage(content="test 4", reply_to="alerts@example.com"))
+    assert sent[-1]["To"] == "alerts@example.com"
+
+    # 5. reply_to that does not parse as an address and not in thread table raises ValueError
+    with pytest.raises(ValueError, match="recipient"):
+        await channel.send(OutgoingMessage(content="test 5", reply_to="not-an-email-or-thread"))
+
+
 async def test_send_file_attaches_into_the_thread(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Any
 ) -> None:
