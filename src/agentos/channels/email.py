@@ -291,6 +291,8 @@ class EmailChannel:
     _connected: bool = field(default=False, init=False, repr=False)
     _last_message_at: datetime | None = field(default=None, init=False, repr=False)
     _last_error: str = field(default="", init=False, repr=False)
+    _last_poll_at: datetime | None = field(default=None, init=False, repr=False)
+    _last_poll_count: int | None = field(default=None, init=False, repr=False)
 
     # ------------------------------------------------------------------
     # Capability declaration
@@ -404,12 +406,53 @@ class EmailChannel:
         log.info("email.stopped", name=self.config.name)
 
     async def health_check(self) -> ChannelHealth:
+        extra: dict[str, Any] = {
+            "imap_folder": self.config.imap_folder,
+            "poll_interval_s": self.config.poll_interval_s,
+        }
+        if self._last_poll_at is not None:
+            extra["last_poll_at"] = self._last_poll_at.isoformat()
+        if self._last_poll_count is not None:
+            extra["last_poll_count"] = self._last_poll_count
+        if self._last_error:
+            extra["last_error"] = self._last_error
         return ChannelHealth(
             connected=self._connected,
             bot_user_id=self.config.from_address or None,
             last_message_at=self._last_message_at,
-            extra={"last_error": self._last_error} if self._last_error else {},
+            extra=extra,
         )
+
+    async def probe(self) -> dict[str, Any]:
+        """Perform active connectivity check against configured IMAP and SMTP endpoints."""
+
+        def _check_imap() -> str:
+            client = self._imap_connect()
+            try:
+                client.noop()
+                return "ok"
+            finally:
+                with contextlib.suppress(Exception):
+                    client.logout()
+
+        def _check_smtp() -> str:
+            with self._smtp_connect() as server:
+                server.noop()
+                return "ok"
+
+        imap_status = "unknown"
+        smtp_status = "unknown"
+        try:
+            imap_status = await asyncio.to_thread(_check_imap)
+        except Exception as exc:
+            imap_status = f"error: {exc}"
+
+        try:
+            smtp_status = await asyncio.to_thread(_check_smtp)
+        except Exception as exc:
+            smtp_status = f"error: {exc}"
+
+        return {"imap": imap_status, "smtp": smtp_status}
 
     # ------------------------------------------------------------------
     # Inbound
@@ -428,6 +471,8 @@ class EmailChannel:
             else:
                 self._connected = True
                 self._last_error = ""
+                self._last_poll_at = datetime.now(UTC)
+                self._last_poll_count = len(messages)
                 for message in messages:
                     self.enqueue(message)
             await asyncio.sleep(max(1.0, self.config.poll_interval_s))
@@ -670,9 +715,7 @@ class EmailChannel:
         message.set_content(body or "")
         return message
 
-    def _smtp_send(self, message: EmailMessage) -> None:
-        """Blocking SMTP send — always called through ``asyncio.to_thread``."""
-
+    def _smtp_connect(self) -> smtplib.SMTP:
         context = ssl.create_default_context()
         timeout = self.config.connect_timeout_s
         if self.config.smtp_ssl:
@@ -684,11 +727,15 @@ class EmailChannel:
             )
         else:
             server = smtplib.SMTP(self.config.smtp_host, self.config.smtp_port, timeout=timeout)
-        with server:
-            if not self.config.smtp_ssl and self.config.smtp_starttls:
-                server.starttls(context=context)
-            if self.config.smtp_username:
-                server.login(self.config.smtp_username, self.config.smtp_password)
+        if not self.config.smtp_ssl and self.config.smtp_starttls:
+            server.starttls(context=context)
+        if self.config.smtp_username:
+            server.login(self.config.smtp_username, self.config.smtp_password)
+        return server
+
+    def _smtp_send(self, message: EmailMessage) -> None:
+        """Blocking SMTP send — always called through ``asyncio.to_thread``."""
+        with self._smtp_connect() as server:
             server.send_message(message)
 
     async def send(self, message: OutgoingMessage) -> None:

@@ -484,6 +484,68 @@ async def test_poll_loop_survives_a_failing_poll(monkeypatch: pytest.MonkeyPatch
     assert channel._task is None
 
 
+async def test_health_check_reports_poll_telemetry(monkeypatch: pytest.MonkeyPatch) -> None:
+    channel = EmailChannel(config=_config(poll_interval_s=1.0, imap_folder="INBOX"))
+    inbound = channel._to_incoming(_raw())
+    assert inbound is not None
+    monkeypatch.setattr(channel, "_fetch_unseen", lambda: [inbound])
+
+    await channel.start()
+    await asyncio.sleep(0.05)
+    health = await channel.health_check()
+    await channel.stop()
+
+    assert health.connected is True
+    assert health.extra["imap_folder"] == "INBOX"
+    assert health.extra["poll_interval_s"] == 1.0
+    assert health.extra["last_poll_count"] == 1
+    assert "last_poll_at" in health.extra
+
+
+async def test_probe_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    channel = EmailChannel(config=_config())
+
+    class _MockIMAP:
+        def noop(self) -> tuple[str, list[bytes]]:
+            return "OK", [b""]
+
+        def logout(self) -> None:
+            pass
+
+    class _MockSMTP:
+        def __enter__(self) -> _MockSMTP:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            pass
+
+        def noop(self) -> tuple[int, bytes]:
+            return 250, b"OK"
+
+    monkeypatch.setattr(channel, "_imap_connect", lambda: _MockIMAP())
+    monkeypatch.setattr(channel, "_smtp_connect", lambda: _MockSMTP())
+
+    result = await channel.probe()
+    assert result == {"imap": "ok", "smtp": "ok"}
+
+
+async def test_probe_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    channel = EmailChannel(config=_config())
+
+    def _fail_imap() -> Any:
+        raise OSError("connection refused")
+
+    def _fail_smtp() -> Any:
+        raise OSError("auth failed")
+
+    monkeypatch.setattr(channel, "_imap_connect", _fail_imap)
+    monkeypatch.setattr(channel, "_smtp_connect", _fail_smtp)
+
+    result = await channel.probe()
+    assert "connection refused" in result["imap"]
+    assert "auth failed" in result["smtp"]
+
+
 async def test_receive_yields_polled_messages(monkeypatch: pytest.MonkeyPatch) -> None:
     channel = EmailChannel(config=_config(poll_interval_s=1.0))
     inbound = channel._to_incoming(_raw())
