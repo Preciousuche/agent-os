@@ -50,3 +50,31 @@ def test_git_rejects_foreign_commit_file_on_windows(
 
     with pytest.raises(ToolError, match="foreign_host_path"):
         git._reject_foreign_git_path("/Users/a1/Desktop/repo/file.py")
+
+
+def test_git_log_argv_without_path() -> None:
+    assert git._git_log_argv({}) == ("git", "log", "--max-count=10")
+    assert git._git_log_argv({"count": 5, "path": None}) == ("git", "log", "--max-count=5")
+
+
+def test_git_log_argv_with_path() -> None:
+    assert git._git_log_argv({"count": 5, "path": "src/main.py"}) == (
+        "git",
+        "log",
+        "--max-count=5",
+        "--",
+        "src/main.py",
+    )
+
+
+async def test_git_log_rejects_foreign_path_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(git, "os", SimpleNamespace(name="nt"), raising=False)
+
+    fn = getattr(git.git_log, "__wrapped__", git.git_log)
+    while hasattr(fn, "__wrapped__"):
+        fn = fn.__wrapped__
+
+    with pytest.raises(ToolError, match="foreign_host_path"):
+        await fn(path="/Users/a1/Desktop/repo/file.py")

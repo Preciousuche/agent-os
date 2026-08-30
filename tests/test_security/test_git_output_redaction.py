@@ -235,3 +235,21 @@ def test_assignment_pass_survives_the_diff_marker(marker: str) -> None:
 )
 def test_diff_marker_does_not_create_false_positives(line: str) -> None:
     assert redact_sensitive_text(line, force=True, code_file=False) == line
+
+
+async def test_git_log_scoped_to_path(repo: Path) -> None:
+    (repo / "other.txt").write_text("hello", encoding="utf-8")
+    _git(repo, "add", "other.txt")
+    _git(repo, "commit", "-qm", "add other")
+
+    fn = getattr(git.git_log, "__wrapped__", git.git_log)
+    while hasattr(fn, "__wrapped__"):
+        fn = fn.__wrapped__
+
+    log_other = await fn(count=10, path="other.txt", workdir=str(repo))
+    assert "add other" in log_other
+    assert "add env" not in log_other
+
+    log_env = await fn(count=10, path=".env", workdir=str(repo))
+    assert "add env" in log_env
+    assert "add other" not in log_env
