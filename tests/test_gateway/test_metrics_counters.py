@@ -255,10 +255,64 @@ async def test_agentos_queue_depth_multi_session_total() -> None:
         await rt.wait(h3.task_id, timeout=2.0)
 
     qd_events = [e for e in captured if e.get("metric") == "agentos_queue_depth"]
-    assert len(qd_events) == 3
-    # First enqueue: 1 pending on sess-a (total=1)
-    assert qd_events[0]["value"] == 1
-    # Second enqueue: task-1 running, task-2 pending on sess-a (total=1)
-    assert qd_events[1]["value"] == 1
-    # Third enqueue: task-2 pending on sess-a, task-3 pending on sess-b (total=2)
-    assert qd_events[2]["value"] == 2
+    values = [e["value"] for e in qd_events]
+    assert values == [
+        1,  # First enqueue: 1 pending on sess-a (total=1)
+        0,  # h1 starts running: 0 pending across all sessions (total=0)
+        1,  # Second enqueue: task-1 running, task-2 pending on sess-a (total=1)
+        2,  # Third enqueue: task-2 pending on sess-a, task-3 pending on sess-b (total=2)
+        1,  # task-2 starts running: task-3 pending on sess-b (total=1)
+        0,  # task-3 starts running: 0 pending across all sessions (total=0)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_agentos_queue_depth_drains_to_zero_after_completion() -> None:
+    """Prometheus gauge drains to 0 when tasks complete."""
+    from agentos.observability.metrics import get_metrics_registry
+
+    reg = get_metrics_registry()
+    gauge = reg._gauges.get("agentos_queue_depth")
+    assert gauge is not None
+    gauge.reset()
+
+    rt = _make_runtime()
+    env = _make_envelope("agent-1::sess-drain")
+    h1 = await rt.enqueue(env, "drain-1")
+    h2 = await rt.enqueue(env, "drain-2")
+    await rt.wait(h1.task_id, timeout=2.0)
+    await rt.wait(h2.task_id, timeout=2.0)
+
+    assert gauge.get() == 0.0
+    text = reg.format_prometheus()
+    assert "agentos_queue_depth 0" in text
+
+
+@pytest.mark.asyncio
+async def test_agentos_queue_depth_decrements_on_cancel_while_pending() -> None:
+    """Cancelling a task while pending decrements agentos_queue_depth."""
+    gate = asyncio.Event()
+
+    async def _blocking_handler(_run: Any) -> None:
+        await gate.wait()
+
+    rt = _make_runtime(turn_handler=_blocking_handler, max_concurrency=1)
+    env_a = _make_envelope("agent-1::sess-cancel-a")
+    env_b = _make_envelope("agent-1::sess-cancel-b")
+
+    with _capture_metric_logs() as captured:
+        h1 = await rt.enqueue(env_a, "running-task")
+        await asyncio.sleep(0.05)
+        h2 = await rt.enqueue(env_b, "pending-task")
+        await asyncio.sleep(0.05)
+        # Cancel the pending task directly
+        cancelled_count = await rt.cancel(task_id=h2.task_id)
+        assert cancelled_count == 1
+        await asyncio.sleep(0.05)
+        gate.set()
+        await rt.wait(h1.task_id, timeout=2.0)
+
+    qd_events = [e for e in captured if e.get("metric") == "agentos_queue_depth"]
+    values = [e["value"] for e in qd_events]
+    # h1 enqueued (1) -> h1 running (0) -> h2 enqueued (1) -> h2 cancelled while pending (0)
+    assert values == [1, 0, 1, 0]

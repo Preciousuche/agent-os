@@ -1120,8 +1120,17 @@ class TaskRuntime:
     async def _mark_running(self, task: _RuntimeTask) -> None:
         async with self._state_lock:
             task.status = AgentTaskStatus.RUNNING
-            self._remove_pending(task)
+            removed = self._remove_pending(task)
             self._running_by_session[task.envelope.session_key] = task
+            _total_queue_depth = (
+                sum(len(v) for v in self._pending_by_session.values()) if removed else None
+            )
+        if _total_queue_depth is not None:
+            _emit_metric(
+                "agentos_queue_depth",
+                value=_total_queue_depth,
+                session_key=task.envelope.session_key,
+            )
         await self._storage.update_agent_task(
             task.task_id,
             status=AgentTaskStatus.RUNNING,
@@ -1156,7 +1165,10 @@ class TaskRuntime:
                 return
             task.terminal_emitted = True
             task.status = status
-            self._remove_pending(task)
+            removed = self._remove_pending(task)
+            _total_queue_depth = (
+                sum(len(v) for v in self._pending_by_session.values()) if removed else None
+            )
             if self._running_by_session.get(task.envelope.session_key) is task:
                 self._running_by_session.pop(task.envelope.session_key, None)
             self._tasks.pop(task.task_id, None)
@@ -1185,6 +1197,12 @@ class TaskRuntime:
                     if not active:
                         self._agent_active_sessions.pop(agent_id, None)
                         self._agent_session_rr.pop(agent_id, None)
+        if _total_queue_depth is not None:
+            _emit_metric(
+                "agentos_queue_depth",
+                value=_total_queue_depth,
+                session_key=task.envelope.session_key,
+            )
         terminal_payload = {
             "status": status,
             "terminal_reason": terminal_reason,
@@ -1260,16 +1278,17 @@ class TaskRuntime:
                 terminal_reason="shutdown_timeout",
             )
 
-    def _remove_pending(self, task: _RuntimeTask) -> None:
+    def _remove_pending(self, task: _RuntimeTask) -> bool:
         pending = self._pending_by_session.get(task.envelope.session_key)
         if not pending:
-            return
+            return False
         try:
             pending.remove(task)
         except ValueError:
-            return
+            return False
         if not pending:
             self._pending_by_session.pop(task.envelope.session_key, None)
+        return True
 
     async def _emit(self, session_key: str, event_name: str, payload: dict[str, Any]) -> None:
         if self._event_emitter is None:
