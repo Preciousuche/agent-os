@@ -258,3 +258,62 @@ def test_otlp_multithreaded_writes() -> None:
         t.join()
 
     assert len(sink._queue) == 100
+
+
+@pytest.mark.asyncio
+async def test_otlp_flush_is_serialized_with_flush_lock(monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    import httpx
+
+    in_flight = 0
+    max_in_flight = 0
+    request_batches: list[list[Any]] = []
+
+    class _MockClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> _MockClient:
+            return self
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+        async def post(self, url: str, json: Any = None, headers: Any = None) -> Any:
+            nonlocal in_flight, max_in_flight
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+            request_batches.append(json)
+            await asyncio.sleep(0.05)
+            in_flight -= 1
+
+            class _MockResp:
+                status_code = 200
+
+                def raise_for_status(self) -> None:
+                    pass
+
+            return _MockResp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _MockClient)
+
+    sink = OtlpTraceSink(endpoint="http://collector.internal:4318", max_queue_size=100)
+    ctx = TraceContext.new(trace_id="test-flush-lock")
+
+    # Populate some events
+    for i in range(5):
+        sink.write(TraceEvent(kind=f"event-{i}", context=ctx))
+
+    # Trigger multiple concurrent flushes simultaneously
+    results = await asyncio.gather(
+        sink.flush(),
+        sink.flush(),
+        sink.flush(),
+    )
+
+    assert all(results)
+    # The lock guarantees no two HTTP posts execute concurrently
+    assert max_in_flight == 1
+    # Only one export actually sent the batch because subsequent flushes saw an empty queue
+    assert len(request_batches) == 1

@@ -231,34 +231,35 @@ class OtlpTraceSink(TraceSink):
         """Flush all buffered events to the OTLP HTTP collector."""
         import httpx
 
-        with self._queue_lock:
-            if not self._queue:
-                return True
-            events_to_send = self._queue[:]
-            self._queue.clear()
-
-        if not events_to_send:
-            return True
-
-        payload = self.build_export_payload(events_to_send)
-        req_headers = {
-            "Content-Type": "application/json",
-            **self.headers,
-        }
-
-        try:
-            async with httpx.AsyncClient(timeout=10.0, trust_env=_trust_env()) as client:
-                resp = await client.post(self.endpoint, json=payload, headers=req_headers)
-                resp.raise_for_status()
-                return True
-        except Exception as exc:
-            log.warning("otlp.export_failed", endpoint=self.endpoint, error=str(exc))
-            # Put unsent events back on failure up to max_queue_size
+        async with self._flush_lock:
             with self._queue_lock:
-                remaining_space = max(0, self.max_queue_size - len(self._queue))
-                if remaining_space > 0:
-                    self._queue = events_to_send[-remaining_space:] + self._queue
-            return False
+                if not self._queue:
+                    return True
+                events_to_send = self._queue[:]
+                self._queue.clear()
+
+            if not events_to_send:
+                return True
+
+            payload = self.build_export_payload(events_to_send)
+            req_headers = {
+                "Content-Type": "application/json",
+                **self.headers,
+            }
+
+            try:
+                async with httpx.AsyncClient(timeout=10.0, trust_env=_trust_env()) as client:
+                    resp = await client.post(self.endpoint, json=payload, headers=req_headers)
+                    resp.raise_for_status()
+                    return True
+            except Exception as exc:
+                log.warning("otlp.export_failed", endpoint=self.endpoint, error=str(exc))
+                # Put unsent events back on failure up to max_queue_size
+                with self._queue_lock:
+                    remaining_space = max(0, self.max_queue_size - len(self._queue))
+                    if remaining_space > 0:
+                        self._queue = events_to_send[-remaining_space:] + self._queue
+                return False
 
     async def close(self) -> None:
         """Close sink, cancel background flush task, and perform final flush."""
