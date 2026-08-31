@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
+from agentos.channels._util import retry_request
 from agentos.channels.slack import SlackChannel
 from agentos.channels.types import OutgoingMessage
 
@@ -189,3 +190,63 @@ async def test_send_does_not_retry_slack_level_error(no_sleep) -> None:
         await channel.send(OutgoingMessage(content="hi", reply_to="C123"))
 
     assert post.await_count == 1
+
+
+async def test_send_returns_response_when_429_retries_exhausted(no_sleep) -> None:
+    """When 429 retries are exhausted, the response is returned without a wasted sleep."""
+    channel = _channel()
+    post = _attach(channel, *[_resp(429, headers={"Retry-After": "1"})] * 4)
+
+    with pytest.raises(httpx.HTTPStatusError) as exc_info:
+        await channel.send(OutgoingMessage(content="hi", reply_to="C123"))
+
+    assert exc_info.value.response.status_code == 429
+    assert post.await_count == 4  # attempt 0 + 3 retries
+    # Slept only on attempts 0, 1, 2 — not on attempt 3 when retries were exhausted
+    assert no_sleep.await_count == 3
+
+
+async def test_retry_request_exhausted_429_returns_response(no_sleep) -> None:
+    """Direct retry_request call returns the 429 response when retries are exhausted."""
+    endpoint = AsyncMock(return_value=_resp(429, headers={"Retry-After": "1"}))
+
+    resp = await retry_request(endpoint, max_retries=2, base_delay=0.1)
+
+    assert resp.status_code == 429
+    assert endpoint.await_count == 3  # attempt 0 + 2 retries
+    assert no_sleep.await_count == 2
+
+
+async def test_retry_request_handles_non_numeric_retry_after(no_sleep) -> None:
+    """Non-numeric or HTTP-date Retry-After does not raise ValueError."""
+    endpoint = AsyncMock(
+        side_effect=[
+            _resp(429, headers={"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}),
+            _resp(200),
+        ]
+    )
+
+    resp = await retry_request(endpoint, max_retries=1, base_delay=0.1)
+
+    assert resp.status_code == 200
+    assert endpoint.await_count == 2
+    # Fell back to base_delay * (2 ** 0) = 0.1
+    no_sleep.assert_awaited_once_with(0.1)
+
+
+async def test_retry_request_retries_all_timeout_exceptions(no_sleep) -> None:
+    """ConnectTimeout, WriteTimeout, and other TimeoutException subclasses are retried."""
+    req = httpx.Request("POST", "https://slack.test/api/chat.postMessage")
+    endpoint = AsyncMock(
+        side_effect=[
+            httpx.ConnectTimeout("connection timed out", request=req),
+            httpx.WriteTimeout("write timed out", request=req),
+            _resp(200),
+        ]
+    )
+
+    resp = await retry_request(endpoint, max_retries=2, base_delay=0.1)
+
+    assert resp.status_code == 200
+    assert endpoint.await_count == 3
+    assert no_sleep.await_count == 2

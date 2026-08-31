@@ -283,8 +283,11 @@ async def retry_request(
     for attempt in range(max_retries + 1):
         try:
             resp = await func(*args, **kwargs)
-            if resp.status_code == 429:
-                retry_after = float(resp.headers.get("Retry-After", base_delay * (2**attempt)))
+            if resp.status_code == 429 and attempt < max_retries:
+                try:
+                    retry_after = float(resp.headers.get("Retry-After", base_delay * (2**attempt)))
+                except (TypeError, ValueError):
+                    retry_after = base_delay * (2**attempt)
                 log.warning("rate_limited", retry_after=retry_after, attempt=attempt)
                 await asyncio.sleep(retry_after)
                 continue
@@ -294,7 +297,7 @@ async def retry_request(
                 await asyncio.sleep(delay)
                 continue
             return resp
-        except (httpx.ConnectError, httpx.ReadTimeout) as exc:
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
             last_exc = exc
             if attempt < max_retries:
                 delay = base_delay * (2**attempt) + random.random()
