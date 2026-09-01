@@ -7,6 +7,7 @@ timeouts are retried, and a fatal 4xx is returned on the first attempt.
 
 from __future__ import annotations
 
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -99,6 +100,64 @@ async def test_send_raises_after_retries_are_exhausted(no_sleep) -> None:
         await channel.send(OutgoingMessage(content="hi", reply_to="C123"))
 
     assert post.await_count == 4  # initial attempt + max_retries=3
+
+
+async def test_send_exhausted_rate_limit_raises_http_status_error(no_sleep) -> None:
+    """When 429 retries are exhausted, the 429 response is returned and raises HTTPStatusError."""
+    channel = _channel()
+    post = _attach(channel, *[_resp(429, {"ok": False, "error": "rate_limited"})] * 4)
+
+    with pytest.raises(httpx.HTTPStatusError) as exc_info:
+        await channel.send(OutgoingMessage(content="hi", reply_to="C123"))
+
+    assert exc_info.value.response.status_code == 429
+    assert post.await_count == 4  # initial attempt + 3 retries
+    assert no_sleep.await_count == 3  # slept between retries, but not after final exhaustion
+
+
+async def test_send_retries_rate_limit_with_http_date_header(no_sleep) -> None:
+    """Retry-After header formatted as RFC 7231 / RFC 9110 HTTP-date is parsed properly."""
+    from datetime import datetime, timedelta
+
+    future = datetime.now(UTC) + timedelta(seconds=15)
+    http_date = future.strftime("%a, %d %b %Y %H:%M:%S GMT")
+
+    channel = _channel()
+    post = _attach(channel, _resp(429, headers={"Retry-After": http_date}), _resp(200))
+
+    await channel.send(OutgoingMessage(content="hi", reply_to="C123"))
+
+    assert post.await_count == 2
+    assert no_sleep.await_count == 1
+    slept_time = no_sleep.call_args[0][0]
+    # Allow 5s delta for test execution tolerance
+    assert 10.0 <= slept_time <= 20.0
+
+
+def test_parse_retry_after_formats() -> None:
+    from datetime import datetime, timedelta
+
+    from agentos.channels._util import _parse_retry_after
+
+    # Seconds integer and float
+    assert _parse_retry_after("10", 1.0) == 10.0
+    assert _parse_retry_after("2.5", 1.0) == 2.5
+
+    # Missing, empty, or unparseable fallback to default_delay
+    assert _parse_retry_after(None, 5.0) == 5.0
+    assert _parse_retry_after("", 5.0) == 5.0
+    assert _parse_retry_after("not-a-number", 5.0) == 5.0
+
+    # RFC 7231 HTTP-date
+    future = datetime.now(UTC) + timedelta(seconds=30)
+    http_date = future.strftime("%a, %d %b %Y %H:%M:%S GMT")
+    parsed = _parse_retry_after(http_date, 1.0)
+    assert 25.0 <= parsed <= 35.0
+
+    # Past HTTP-date clamps to 0.0
+    past = datetime.now(UTC) - timedelta(seconds=30)
+    past_date = past.strftime("%a, %d %b %Y %H:%M:%S GMT")
+    assert _parse_retry_after(past_date, 1.0) == 0.0
 
 
 async def test_edit_retries_transient_error(no_sleep) -> None:

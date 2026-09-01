@@ -14,6 +14,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import UTC
 from typing import Any, Literal
 
 import httpx
@@ -271,6 +272,29 @@ class FloodStrikeBackoff:
         self._fallback = False
 
 
+def _parse_retry_after(header_val: str | None, default_delay: float) -> float:
+    """Parse a Retry-After header value into seconds.
+
+    Supports RFC 7231 / RFC 9110 formats: integer/float seconds or an HTTP-date.
+    Falls back to ``default_delay`` if missing or unparseable.
+    """
+    if not header_val:
+        return default_delay
+    header_str = header_val.strip()
+    try:
+        delay = float(header_str)
+    except ValueError:
+        try:
+            import email.utils
+            from datetime import datetime
+
+            dt = email.utils.parsedate_to_datetime(header_str)
+            delay = (dt - datetime.now(UTC)).total_seconds()
+        except Exception:
+            return default_delay
+    return max(0.0, delay)
+
+
 async def retry_request(
     func: Callable[..., Awaitable[httpx.Response]],
     *args: Any,
@@ -283,8 +307,10 @@ async def retry_request(
     for attempt in range(max_retries + 1):
         try:
             resp = await func(*args, **kwargs)
-            if resp.status_code == 429:
-                retry_after = float(resp.headers.get("Retry-After", base_delay * (2**attempt)))
+            if resp.status_code == 429 and attempt < max_retries:
+                retry_after = _parse_retry_after(
+                    resp.headers.get("Retry-After"), base_delay * (2**attempt)
+                )
                 log.warning("rate_limited", retry_after=retry_after, attempt=attempt)
                 await asyncio.sleep(retry_after)
                 continue
