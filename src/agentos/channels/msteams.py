@@ -69,6 +69,7 @@ FATAL_ERROR_CLASSES: tuple[str, ...] = (
 )
 
 _CONVERSATION_CACHE_SCHEMA_VERSION = 1
+_MAX_CONVERSATION_CACHE_BYTES = 1_000_000  # 1 MB DoS limit for conversations.json
 
 
 def _default_workspace_dir() -> Path:
@@ -220,16 +221,22 @@ class MSTeamsChannel:
         return workspace / "state" / "msteams" / "conversations.json"
 
     def _load_conversation_cache(self) -> None:
-        from botbuilder.schema import (  # type: ignore[import-untyped]  # noqa: PLC0415
-            ConversationReference,
-        )
-
         path = self._cache_path()
         if not path.is_file():
             self._references = {}
             return
 
         try:
+            size = path.stat().st_size
+            if size > _MAX_CONVERSATION_CACHE_BYTES:
+                log.warning(
+                    "msteams.cache_file_too_large",
+                    path=str(path),
+                    size=size,
+                    limit=_MAX_CONVERSATION_CACHE_BYTES,
+                )
+                self._references = {}
+                return
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             log.warning("msteams.cache_load_failed", error=str(exc))
@@ -245,6 +252,10 @@ class MSTeamsChannel:
             )
             self._references = {}
             return
+
+        from botbuilder.schema import (  # type: ignore[import-untyped]  # noqa: PLC0415
+            ConversationReference,
+        )
 
         loaded: dict[str, Any] = {}
         for key, ref_dict in data.get("conversations", {}).items():
