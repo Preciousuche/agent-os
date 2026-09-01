@@ -105,14 +105,24 @@ def _is_policy_refusal(text: str) -> bool:
     )
 
 
+_EMPTY_RESPONSE_MARKERS = (
+    "empty response",
+    "empty_response",
+    "empty completion",
+    "empty_completion",
+    "empty choices",
+    "produced no output",
+    "no content returned",
+    "no response content",
+)
+
+
 def _is_empty_response(raw_code: str, message: str) -> bool:
     normalized_code = (raw_code or "").strip().lower()
     normalized_message = (message or "").strip().lower()
-    return normalized_code == "empty_response" or normalized_message in {
-        "empty_response",
-        "empty response",
-        "provider returned an empty response",
-    }
+    if normalized_code in {"empty_response", "empty_completion"}:
+        return True
+    return any(marker in normalized_message for marker in _EMPTY_RESPONSE_MARKERS)
 
 
 def _is_gateway_transient(text: str) -> bool:
@@ -134,8 +144,9 @@ def classify_provider_error(
         return ProviderFailureKind.CONTEXT_OVERFLOW
     if _is_policy_refusal(text):
         return ProviderFailureKind.POLICY_REFUSAL
-    if _is_empty_response(raw_code, message):
-        return ProviderFailureKind.EMPTY_RESPONSE
+    if status_code not in _GATEWAY_TRANSIENT_STATUS_CODES and not _is_gateway_transient(text):
+        if _is_empty_response(raw_code, message):
+            return ProviderFailureKind.EMPTY_RESPONSE
 
     if provider in _OPENAI_COMPAT_PROVIDERS:
         if status_code in {401, 403} or "invalid api key" in text or "unauthorized" in text:
