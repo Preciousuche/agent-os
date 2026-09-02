@@ -191,6 +191,36 @@ def test_config_set_explicit_config_path_persists_to_target(tmp_path: Path):
     assert "True" in check.stdout
 
 
+def test_config_set_port_persists_to_target(tmp_path: Path):
+    target = tmp_path / "config.toml"
+    target.write_text("port = 18791\n", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        ["config", "set", "port", "18792", "--config", str(target)],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert "Config:" in result.stdout
+    assert "Restart the gateway" in result.stdout
+    check = runner.invoke(app, ["config", "get", "port", "--config", str(target)])
+    assert check.exit_code == 0, check.stdout
+    assert "18792" in check.stdout
+
+
+def test_config_set_gateway_port_fails_key_not_found(tmp_path: Path):
+    target = tmp_path / "config.toml"
+    target.write_text("port = 18791\n", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        ["config", "set", "gateway.port", "18791", "--config", str(target)],
+    )
+
+    assert result.exit_code == 1
+    assert "Key not found: gateway.port" in result.stdout
+
+
 def test_gateway_json_errors_go_to_stderr(monkeypatch):
     _install_fake_gateway(monkeypatch, FailingConnectGatewayClient)
 
