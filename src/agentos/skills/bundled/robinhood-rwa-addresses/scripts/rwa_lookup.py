@@ -183,14 +183,22 @@ def lookup(
     return [_shape(t) for _s, t in scored[:limit]]
 
 
+def _validate_http_url(url: str) -> str:
+    cleaned = (url or "").strip()
+    if not (cleaned.startswith("http://") or cleaned.startswith("https://")):
+        raise ValueError(f"invalid url {url!r}: must start with http:// or https://")
+    return cleaned
+
+
 def _rpc_batch(rpc_url: str, calls: list[dict[str, Any]], timeout: float) -> dict[str, str]:
     """Send one batched JSON-RPC request; return ``{id: result}`` for successes.
 
     Batching keeps verification to a single HTTP round-trip no matter how many
     candidates are being checked.
     """
+    rpc_url = _validate_http_url(rpc_url)
     payload = json.dumps(calls).encode("utf-8")
-    req = urllib.request.Request(  # noqa: S310 - operator-supplied RPC endpoint
+    req = urllib.request.Request(
         rpc_url,
         data=payload,
         headers={
@@ -198,7 +206,7 @@ def _rpc_batch(rpc_url: str, calls: list[dict[str, Any]], timeout: float) -> dic
             "User-Agent": "AgentOS-robinhood-rwa-skill/0.2",
         },
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - validated http(s) URL
         body = json.loads(resp.read().decode("utf-8", errors="replace"))
     if not isinstance(body, list):
         raise RpcError("expected a batched JSON-RPC response")
@@ -313,37 +321,50 @@ def _warning_for(
     return None
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Robinhood RWA contract-address lookup")
-    parser.add_argument("--query", required=True, help="Company name or ticker (e.g. Apple, AAPL)")
-    parser.add_argument("--limit", type=int, default=5, help="Max matches to return")
-    parser.add_argument("--timeout", type=float, default=10.0, help="HTTP timeout seconds")
-    parser.add_argument(
-        "--include-community",
-        action="store_true",
-        help="Also match non-stock community tokens (off by default; some impersonate listings)",
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Robinhood tokenized-stock (RWA) address lookup",
     )
+    parser.add_argument("--query", required=True, help="Company name or ticker (Apple, AAPL)")
+    parser.add_argument("--limit", type=int, default=5, help="Maximum candidates to return")
+    parser.add_argument("--timeout", type=float, default=10.0, help="HTTP timeout seconds")
     parser.add_argument("--rpc-url", default=DEFAULT_RPC_URL, help="Robinhood Chain JSON-RPC URL")
     parser.add_argument(
         "--no-verify",
         action="store_true",
-        help="Skip the on-chain beacon check (offline; every match is reported unverified)",
+        help="Skip the on-chain beacon check (faster, but marks everything unverified)",
+    )
+    parser.add_argument(
+        "--include-community",
+        action="store_true",
+        help="Include listings that do not look like Robinhood Stock Tokens",
     )
     parser.add_argument(
         "--cards",
         metavar="FILE",
-        help=(
-            "Where to write the Web-chat card artifact. Defaults to <query>.cards.json "
-            "in the working directory; the publish marker goes to stderr so stdout stays "
-            "pure JSON."
-        ),
+        help="Where to write the Web-chat card artifact (default: <symbol>.cards.json)",
     )
     parser.add_argument(
         "--no-cards",
         action="store_true",
         help="Do not write the card artifact (JSON on stdout only).",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+
+    if args.rpc_url and not args.no_verify:
+        try:
+            args.rpc_url = _validate_http_url(args.rpc_url)
+        except ValueError as exc:
+            print(
+                json.dumps(
+                    {
+                        "query": args.query,
+                        "matches": [],
+                        "error": str(exc),
+                    }
+                )
+            )
+            return 0
 
     try:
         tokens = _fetch_tokens(args.timeout)

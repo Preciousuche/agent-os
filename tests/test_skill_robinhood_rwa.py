@@ -18,6 +18,8 @@ import importlib.util
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 _SCRIPT = (
     Path(__file__).resolve().parents[1]
     / "src/agentos/skills/bundled/robinhood-rwa-addresses/scripts/rwa_lookup.py"
@@ -317,3 +319,60 @@ def test_skipped_verification_is_not_reported_as_a_network_fault() -> None:
 
 def _warning(statuses: list[str]) -> str | None:
     return rwa_lookup._warning_for([{"status": s} for s in statuses])
+
+
+# --------------------------------------------------------------------------
+# RPC URL Scheme Validation
+# --------------------------------------------------------------------------
+
+
+def test_validate_http_url_rejects_non_http_schemes() -> None:
+    for invalid in [
+        "file:///etc/passwd",
+        "file:///c:/windows/win.ini",
+        "ftp://rpc.example.com",
+        "gopher://example.com",
+        "javascript:alert(1)",
+        "/etc/passwd",
+        "relative/path.json",
+        "c:\\windows\\system32",
+        "",
+        "   ",
+    ]:
+        with pytest.raises(ValueError, match="must start with http:// or https://"):
+            rwa_lookup._validate_http_url(invalid)
+
+    assert rwa_lookup._validate_http_url("http://127.0.0.1:8545") == "http://127.0.0.1:8545"
+    assert (
+        rwa_lookup._validate_http_url("https://rpc.mainnet.chain.robinhood.com")
+        == "https://rpc.mainnet.chain.robinhood.com"
+    )
+
+
+def test_rpc_batch_rejects_file_scheme() -> None:
+    with pytest.raises(ValueError, match="must start with http:// or https://"):
+        rwa_lookup._rpc_batch("file:///etc/passwd", [], timeout=5.0)
+
+
+def test_main_rejects_invalid_rpc_url(capsys: pytest.CaptureFixture[str]) -> None:
+    import json
+
+    code = rwa_lookup.main(["--query", "Apple", "--rpc-url", "file:///etc/passwd"])
+    assert code == 0
+    out, _ = capsys.readouterr()
+    payload = json.loads(out)
+    assert "error" in payload
+    assert "must start with http:// or https://" in payload["error"]
+
+
+def test_verify_tokens_handles_invalid_rpc_url() -> None:
+    matches = [
+        {
+            "name": "Apple",
+            "symbol": "AAPL",
+            "address": "0xaf3d76f1834a1d425780943c99ea8a608f8a93f9",
+        }
+    ]
+    verified = rwa_lookup.verify_tokens(matches, "file:///etc/passwd", timeout=1.0)
+    assert verified[0]["status"] == rwa_lookup.STATUS_UNVERIFIED
+    assert verified[0]["beacon"] is None
