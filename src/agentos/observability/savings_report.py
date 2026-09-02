@@ -141,7 +141,7 @@ def collect_entries(
             if end_date and day > end_date:
                 continue
             entries.append(entry)
-    entries.sort(key=lambda e: e.ts)
+    entries.sort(key=lambda e: e.ts or "")
     return entries
 
 

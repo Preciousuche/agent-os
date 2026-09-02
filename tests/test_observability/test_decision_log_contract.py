@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from agentos.observability.decision_log import (
     DecisionEntry,
     build_intent_summary,
@@ -128,3 +130,65 @@ def test_decision_log_round_trips_daily_notes_policy(tmp_path) -> None:
     assert loaded[0].daily_notes_omitted is True
     assert loaded[0].daily_notes_count_before_omit == 3
     assert loaded[0].daily_notes_policy_reason == "auto_injection_disabled"
+
+
+def test_load_entries_skips_malformed_and_partial_lines(
+    tmp_path, caplog: pytest.LogCaptureFixture
+) -> None:
+    import logging
+
+    entry1 = DecisionEntry(
+        turn_id="turn-valid-1",
+        session_key="agent:main:test",
+        prompt_hash="a" * 16,
+        system_prompt_hash="b" * 16,
+        tool_list_hash="c" * 16,
+        tool_choice="auto",
+        tokens_input=10,
+        tokens_output=5,
+        model="fake-model",
+        provider="fake",
+        latency_ms=10,
+        ts="2026-05-03T20:00:00Z",
+    )
+    entry2 = DecisionEntry(
+        turn_id="turn-valid-2",
+        session_key="agent:main:test",
+        prompt_hash="d" * 16,
+        system_prompt_hash="e" * 16,
+        tool_list_hash="f" * 16,
+        tool_choice="auto",
+        tokens_input=20,
+        tokens_output=15,
+        model="fake-model-2",
+        provider="fake",
+        latency_ms=25,
+        ts="2026-05-03T20:01:00Z",
+    )
+
+    from dataclasses import asdict
+
+    log_file = tmp_path / "decisions-20260503.jsonl"
+    content = (
+        json.dumps(asdict(entry1))
+        + "\n"
+        + '{"turn_id": "truncated-line-no-close\n'
+        + "42\n"
+        + "null\n"
+        + '{"turn_id": "missing-required-fields"}\n'
+        + '{"turn_id": 12345, "invalid": "types"}\n'
+        + "{not valid json\n"
+        + "\n"
+        + json.dumps(asdict(entry2))
+        + "\n"
+        + '{"turn_id": "sigkill-mid-write-truncated-final-line'
+    )
+    log_file.write_text(content, encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING):
+        loaded = load_entries(log_file)
+    assert len(loaded) == 2
+    assert loaded[0].turn_id == "turn-valid-1"
+    assert loaded[1].turn_id == "turn-valid-2"
+    assert "Skipping malformed decision log line" in caplog.text
+    assert "Skipped" in caplog.text and "corrupted line(s)" in caplog.text

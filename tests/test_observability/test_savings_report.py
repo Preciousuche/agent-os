@@ -178,3 +178,28 @@ def test_empty_log_dir_yields_a_zeroed_report(tmp_path: Path) -> None:
     assert report.by_route == []
     assert report.by_day == []
     assert report.start_date is None
+
+
+def test_build_savings_report_survives_corrupted_log_lines(tmp_path: Path) -> None:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    log_file = tmp_path / "decisions-20260901.jsonl"
+    turn1 = _turn("2026-09-01", savings_usd=0.04, cost_usd=0.06)
+    turn2 = _turn("2026-09-01", savings_usd=0.02, cost_usd=0.03)
+    content = (
+        json.dumps(turn1)
+        + "\n"
+        + '{"turn_id": "aborted-write\n'
+        + "{bad json}\n"
+        + "12345\n"
+        + '{"invalid": "schema"}\n'
+        + json.dumps(turn2)
+        + "\n"
+    )
+    log_file.write_text(content, encoding="utf-8")
+
+    report = build_savings_report(tmp_path)
+    assert report.turns_total == 2
+    assert report.turns_routed == 2
+    assert report.routing_savings_usd == 0.06
+    assert report.actual_cost_usd == 0.09
+    assert report.top_tier_cost_usd == 0.15
