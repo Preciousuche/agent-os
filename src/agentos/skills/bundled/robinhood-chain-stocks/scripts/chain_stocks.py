@@ -56,13 +56,21 @@ class RpcError(RuntimeError):
     """A JSON-RPC call returned an error or an unusable result."""
 
 
+def _validate_http_url(url: str) -> str:
+    cleaned = (url or "").strip()
+    if not (cleaned.startswith("http://") or cleaned.startswith("https://")):
+        raise ValueError(f"invalid url {url!r}: must start with http:// or https://")
+    return cleaned
+
+
 def _http_json(url: str, timeout: float, payload: dict[str, Any] | None = None) -> Any:
+    url = _validate_http_url(url)
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
     headers = {"User-Agent": "AgentOS-robinhood-chain-stocks/0.1"}
     if data is not None:
         headers["Content-Type"] = "application/json"
-    req = urllib.request.Request(url, data=data, headers=headers)  # noqa: S310 - fixed endpoints
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+    req = urllib.request.Request(url, data=data, headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - validated http(s) URL
         return json.loads(resp.read().decode("utf-8", errors="replace"))
 
 
@@ -79,7 +87,11 @@ def _eth_call(rpc_url: str, to: str, data: str, timeout: float) -> str:
         },
     )
     if isinstance(body, dict) and "error" in body:
-        message = str(body["error"].get("message", body["error"]))
+        error_val = body["error"]
+        if isinstance(error_val, dict):
+            message = str(error_val.get("message", error_val))
+        else:
+            message = str(error_val)
         raise RpcError(message)
     result = body.get("result") if isinstance(body, dict) else None
     if not isinstance(result, str) or not result.startswith("0x"):
@@ -384,7 +396,7 @@ def _resolve_target(
     return str(match.get("address", "")), match, feeds
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Robinhood Chain on-chain stock reader")
     parser.add_argument("--query", help="Company name or ticker (e.g. Apple, AAPL)")
     parser.add_argument("--address", help="Token contract address; skips name resolution")
@@ -406,7 +418,8 @@ def main() -> int:
         action="store_true",
         help="Do not write the card artifact (JSON on stdout only).",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+
 
     if not args.query and not args.address:
         print(json.dumps({"error": "provide --query or --address"}))
@@ -414,6 +427,18 @@ def main() -> int:
     if args.holder and not _ADDRESS_RE.match(args.holder):
         print(json.dumps({"error": f"not a valid holder address: {args.holder}"}))
         return 0
+    if args.rpc_url:
+        rpc_url = args.rpc_url.strip()
+        if not (rpc_url.startswith("http://") or rpc_url.startswith("https://")):
+            print(
+                json.dumps(
+                    {
+                        "error": f"invalid rpc-url {args.rpc_url!r}: must start with http:// or https://"
+                    }
+                )
+            )
+            return 0
+        args.rpc_url = rpc_url
 
     try:
         address, listed, feeds = _resolve_target(args, args.timeout)

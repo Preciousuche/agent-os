@@ -368,3 +368,74 @@ def test_skill_documents_the_read_only_boundary() -> None:
     assert "read-only" in body.lower()
     assert "uiMultiplier()" in body
     assert "4663" in body
+
+
+def test_validate_http_url_rejects_non_http_schemes() -> None:
+    for invalid in [
+        "file:///etc/passwd",
+        "file:///c:/windows/system32/drivers/etc/hosts",
+        "ftp://rpc.example.com",
+        "gopher://example.com",
+        "javascript:alert(1)",
+        "/etc/passwd",
+        "relative/path.json",
+        "c:\\windows\\system32",
+        "",
+        "   ",
+    ]:
+        with pytest.raises(ValueError, match="must start with http:// or https://"):
+            chain_stocks._validate_http_url(invalid)
+
+    assert chain_stocks._validate_http_url("http://127.0.0.1:8545") == "http://127.0.0.1:8545"
+    assert (
+        chain_stocks._validate_http_url("https://rpc.mainnet.chain.robinhood.com")
+        == "https://rpc.mainnet.chain.robinhood.com"
+    )
+
+
+def test_http_json_rejects_file_scheme() -> None:
+    with pytest.raises(ValueError, match="must start with http:// or https://"):
+        chain_stocks._http_json("file:///etc/passwd", timeout=5.0)
+
+
+def test_main_rejects_invalid_rpc_url(capsys: pytest.CaptureFixture[str]) -> None:
+    import json
+
+    code = chain_stocks.main(["--address", AAPL, "--rpc-url", "file:///etc/passwd"])
+    assert code == 0
+    out, _ = capsys.readouterr()
+    payload = json.loads(out)
+    assert "invalid rpc-url" in payload.get("error", "")
+    assert "must start with http:// or https://" in payload.get("error", "")
+
+
+def test_eth_call_handles_string_error_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        chain_stocks, "_http_json", lambda *a, **kw: {"error": "rate limit exceeded"}
+    )
+    with pytest.raises(chain_stocks.RpcError, match="rate limit exceeded"):
+        chain_stocks._eth_call("http://127.0.0.1:8545", AAPL, "0x", 5.0)
+
+
+def test_inspect_token_handles_string_rpc_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        chain_stocks, "_http_json", lambda *a, **kw: {"error": "rate limit exceeded"}
+    )
+    result = chain_stocks.inspect_token("http://127.0.0.1:8545", AAPL, timeout=5.0)
+    assert "readErrors" in result
+    assert result["readErrors"].get("symbol") == "rate limit exceeded"
+
+
+def test_main_handles_string_rpc_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import json
+
+    monkeypatch.setattr(
+        chain_stocks, "_http_json", lambda *a, **kw: {"error": "rate limit exceeded"}
+    )
+    code = chain_stocks.main(["--address", AAPL, "--rpc-url", "http://127.0.0.1:8545"])
+    assert code == 0
+    out, _ = capsys.readouterr()
+    payload = json.loads(out)
+    assert payload["token"]["readErrors"]["symbol"] == "rate limit exceeded"
