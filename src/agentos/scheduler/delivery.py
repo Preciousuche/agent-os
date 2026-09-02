@@ -503,9 +503,11 @@ class DeliveryChain:
             log.warning("delivery.webhook_url_invalid", job_id=job_id, reason=str(exc))
             return _failed(f"invalid webhook URL: {exc}")
 
-        import httpx
-
         from agentos.channels._util import retry_request
+        from agentos.tools.ssrf_client import (
+            ssrf_guarded_client,
+            validate_metadata_only_address,
+        )
 
         headers = {"Content-Type": "application/json"}
         if token:
@@ -517,7 +519,10 @@ class DeliveryChain:
             "deliveredAt": datetime.now(UTC).isoformat(),
         }
         try:
-            async with httpx.AsyncClient(timeout=_WEBHOOK_TIMEOUT_SECONDS) as client:
+            async with ssrf_guarded_client(
+                timeout=_WEBHOOK_TIMEOUT_SECONDS,
+                validator=validate_metadata_only_address,
+            ) as client:
                 # retry_request's defaults (3 retries, 1s base) keep the worst
                 # case near 7s plus jitter — inside the job's own timeout
                 # budget, whose slot is held while we back off.

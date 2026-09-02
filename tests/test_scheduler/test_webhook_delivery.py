@@ -256,10 +256,10 @@ class _RecordingAsyncClient:
 async def test_deliver_webhook_posts_json_with_bearer(monkeypatch) -> None:
     _RecordingAsyncClient.instances.clear()
 
-    class _FakeHttpx:
-        AsyncClient = _RecordingAsyncClient
-
-    monkeypatch.setitem(__import__("sys").modules, "httpx", _FakeHttpx)
+    monkeypatch.setattr(
+        "agentos.tools.ssrf_client.ssrf_guarded_client",
+        lambda *a, **kw: _RecordingAsyncClient(timeout=None),
+    )
 
     chain = DeliveryChain()
     status = await chain._deliver_webhook(
@@ -281,10 +281,10 @@ async def test_deliver_webhook_posts_json_with_bearer(monkeypatch) -> None:
 async def test_deliver_webhook_omits_authorization_when_no_token(monkeypatch) -> None:
     _RecordingAsyncClient.instances.clear()
 
-    class _FakeHttpx:
-        AsyncClient = _RecordingAsyncClient
-
-    monkeypatch.setitem(__import__("sys").modules, "httpx", _FakeHttpx)
+    monkeypatch.setattr(
+        "agentos.tools.ssrf_client.ssrf_guarded_client",
+        lambda *a, **kw: _RecordingAsyncClient(timeout=None),
+    )
 
     chain = DeliveryChain()
     status = await chain._deliver_webhook(
@@ -309,11 +309,11 @@ async def test_deliver_webhook_returns_failed_on_http_error(monkeypatch, no_back
 
             return _Resp()
 
-    class _FakeHttpx:
-        AsyncClient = _ErrorClient
-
-    monkeypatch.setitem(__import__("sys").modules, "httpx", _FakeHttpx)
     _RecordingAsyncClient.instances.clear()
+    monkeypatch.setattr(
+        "agentos.tools.ssrf_client.ssrf_guarded_client",
+        lambda *a, **kw: _ErrorClient(timeout=None),
+    )
 
     chain = DeliveryChain()
     status = await chain._deliver_webhook(
@@ -346,11 +346,11 @@ def _scripted_httpx(monkeypatch, responses):
                 raise item
             return item
 
-    class _FakeHttpx:
-        AsyncClient = _ScriptedClient
-
-    monkeypatch.setitem(__import__("sys").modules, "httpx", _FakeHttpx)
     _RecordingAsyncClient.instances.clear()
+    monkeypatch.setattr(
+        "agentos.tools.ssrf_client.ssrf_guarded_client",
+        lambda *a, **kw: _ScriptedClient(timeout=None),
+    )
 
 
 def _webhook_response(status_code: int, headers: dict | None = None) -> httpx.Response:
@@ -417,3 +417,60 @@ async def test_deliver_webhook_honours_retry_after_on_429(monkeypatch, no_backof
 
     assert status == "delivered"
     no_backoff.assert_awaited_once_with(2.0)
+
+
+async def test_deliver_webhook_rejects_dns_rebinding_metadata_target(monkeypatch) -> None:
+    """A hostname that resolves to a public IP initially but rebinds to 169.254.169.254
+    at connect time is refused by ValidatingNetworkBackend before any socket connects.
+    """
+    import socket
+
+    import httpcore
+
+    from agentos.scheduler.delivery import status_detail
+    from agentos.tools.ssrf_client import ValidatingNetworkBackend
+    from agentos.tools.types import SSRFBlockedError
+
+    lookup_count = 0
+
+    def mock_getaddrinfo(host, port, *args, **kwargs):
+        nonlocal lookup_count
+        lookup_count += 1
+        if lookup_count == 1:
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", port))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", mock_getaddrinfo)
+
+    # Ensure test is completely offline: fail immediately if any unguarded TCP connect occurs
+    async def fail_connect(*args, **kwargs):
+        raise AssertionError("Unguarded TCP connection attempted; SSRF guard was bypassed")
+
+    monkeypatch.setattr(httpcore.AnyIOBackend, "connect_tcp", fail_connect)
+
+    # Assert on the guard rejection itself: ValidatingNetworkBackend refuses 169.254.169.254
+    guard_rejections: list[str] = []
+    real_connect_tcp = ValidatingNetworkBackend.connect_tcp
+
+    async def tracking_connect_tcp(self, host: str, port: int, *args, **kwargs):
+        try:
+            return await real_connect_tcp(self, host, port, *args, **kwargs)
+        except SSRFBlockedError as exc:
+            guard_rejections.append(str(exc))
+            raise
+
+    monkeypatch.setattr(ValidatingNetworkBackend, "connect_tcp", tracking_connect_tcp)
+
+    chain = DeliveryChain()
+    status = await chain._deliver_webhook(
+        _webhook_job("https://rebind.example.org/cron"),
+        text="secret payload",
+    )
+
+    # 1. Assert on the delivery status and detail
+    assert status == "delivery_failed"
+    assert "cloud metadata" in status_detail(status)
+
+    # 2. Assert ValidatingNetworkBackend caught and refused the rebinding IP
+    assert len(guard_rejections) == 1
+    assert "cloud metadata" in guard_rejections[0]

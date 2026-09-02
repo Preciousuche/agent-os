@@ -11,7 +11,6 @@ persistence, RPC, and the actual failure-routing decision.
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -496,8 +495,9 @@ async def test_dispatcher_exception_does_not_break_state_machine() -> None:
 
 async def test_dispatch_failure_alert_via_webhook(monkeypatch) -> None:
     _RecordingHttpxClient.posts.clear()
-    monkeypatch.setitem(
-        sys.modules, "httpx", type("M", (), {"AsyncClient": _RecordingHttpxClient})
+    monkeypatch.setattr(
+        "agentos.tools.ssrf_client.ssrf_guarded_client",
+        lambda *a, **kw: _RecordingHttpxClient(timeout=None),
     )
 
     chain = DeliveryChain()

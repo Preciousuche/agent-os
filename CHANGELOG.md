@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Security
+
+- Webhook delivery (`scheduler/delivery.py`) now routes through
+  `ssrf_guarded_client(validator=validate_metadata_only_address)` at connect
+  time, closing the DNS-rebinding TOCTOU window against cloud metadata endpoints
+  while preserving localhost and LAN webhook delivery (#725).
+
 ## [2026.9.3] - 2026-09-03
 
 ### Added
