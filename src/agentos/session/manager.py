@@ -128,7 +128,7 @@ def _archive_dir() -> Path:
 
 
 def _safe_archive_part(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-") or "session"
+    return re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-.") or "session"
 
 
 def _stable_json(value: Any) -> str:
