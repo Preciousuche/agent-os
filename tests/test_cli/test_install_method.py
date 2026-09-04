@@ -149,6 +149,7 @@ def test_hardened_path_no_duplicates() -> None:
 def test_hardened_path_windows_case_insensitivity(monkeypatch: pytest.MonkeyPatch) -> None:
     """Windows environment dicts with 'Path' or 'path' must preserve existing entries."""
     monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(os, "pathsep", ";")
     env = {"Path": f"C:\\Program Files\\uv\\bin{os.pathsep}C:\\Windows\\System32"}
     out = im.hardened_path_env(env)
     assert "Path" not in out
@@ -163,6 +164,7 @@ def test_hardened_path_windows_merges_mixed_case_duplicates(
 ) -> None:
     """When both 'Path' and 'PATH' are present, merge and deduplicate into 'PATH'."""
     monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(os, "pathsep", ";")
     env = {"Path": "C:\\uv\\bin", "PATH": "C:\\Windows\\System32"}
     out = im.hardened_path_env(env)
     assert "Path" not in out
