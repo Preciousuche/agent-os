@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 import time
 from collections.abc import Iterator
@@ -18,6 +19,16 @@ from agentos.session.keys import normalize_agent_id
 from .pricing import calculate_cost_usd, lookup_price
 
 log = structlog.get_logger(__name__)
+
+# Default spend reserved against a ceiling when a turn is admitted. Prevents
+# concurrent subagent fan-out from racing past the ceiling before real spend
+# lands. Configurable per-gateway via BudgetsConfig.reservation_usd.
+_DEFAULT_RESERVATION_USD = 0.50
+
+# How long an admission reservation is held before it expires. The turn loop
+# releases reservations explicitly at teardown; this TTL is only a backstop for
+# a turn that dies without teardown running.
+_DEFAULT_RESERVATION_TTL_S = 60.0
 
 
 def parse_session_key_scope(session_key: str) -> tuple[str, str]:
@@ -404,6 +415,17 @@ class UsageTracker:
         self._daily_spend_day = ""
         self._session_spend: dict[str, float] = {}
         self._session_active_skill: dict[str, str] = {}
+        self._budget_lock = asyncio.Lock()
+        # Scope-keyed budget reservations: warn_key -> list of (res_id, amount, expires_at).
+        # When a turn is admitted, a reservation is placed against every scope
+        # ceiling that turn must respect (session, agent, channel, and gateway/daily).
+        # Held until released on turn teardown (all exit paths). The TTL is only a
+        # backstop for a turn that dies without teardown running (e.g. SIGKILL).
+        self._reservations: dict[str, list[tuple[int, float, float]]] = {}
+        self._reservation_seq = 0
+        # session_key -> set of reservation ids currently held by that session's
+        # in-flight turn(s), so teardown can release exactly them.
+        self._session_reservation_ids: dict[str, set[int]] = {}
         _global_usage_tracker = self
 
         if self._db_path:
@@ -579,7 +601,64 @@ class UsageTracker:
             self._session_metadata[session_key] = meta
         return meta
 
-    def check_budget_limits(self, session_key: str, config: Any) -> tuple[bool, str | None]:
+    def _reserved_for(self, warn_key: str, now: float) -> float:
+        """Sum of not-yet-expired reservations for one scope, pruning as it goes.
+
+        Must be called with ``_budget_lock`` held: pruning mutates the shared
+        dict, and an unguarded prune racing a concurrent reserve could drop an
+        entry the other coroutine just added.
+        """
+        bucket = self._reservations.get(warn_key)
+        if not bucket:
+            return 0.0
+        live = [
+            (res_id, amount, expires_at)
+            for res_id, amount, expires_at in bucket
+            if expires_at > now
+        ]
+        if live:
+            self._reservations[warn_key] = live
+        else:
+            self._reservations.pop(warn_key, None)
+        return sum(amount for _, amount, _ in live)
+
+    def release_reservations(self, reservation_ids: set[int]) -> None:
+        """Drop the given reservations from every scope bucket.
+
+        Called when a turn ends on ANY path — success, error, or
+        cancellation — so a turn's admission reservation never outlives the
+        turn. Releasing by explicit id (not by session_key) means a turn only
+        ever drops its own reservation, never a concurrent sibling's that
+        happens to share the same scope. Idempotent and lock-guarded; ids not
+        present (already released, or already expired via the TTL backstop)
+        are simply ignored.
+        """
+        if not reservation_ids:
+            return
+        for warn_key in list(self._reservations.keys()):
+            bucket = self._reservations.get(warn_key)
+            if not bucket:
+                continue
+            remaining = [entry for entry in bucket if entry[0] not in reservation_ids]
+            if remaining:
+                self._reservations[warn_key] = remaining
+            else:
+                self._reservations.pop(warn_key, None)
+
+    def release_session_reservations(self, session_key: str) -> None:
+        """Release every reservation held by ``session_key``'s current turn.
+
+        The teardown hook a turn calls in its ``finally`` — runs on success,
+        error, and cancellation alike, so a turn that dies before recording
+        spend (a failed or cancelled subagent) frees its admission reservation
+        immediately instead of leaving it to expire on the TTL and eat
+        headroom in the meantime.
+        """
+        ids = self._session_reservation_ids.pop(session_key, None)
+        if ids:
+            self.release_reservations(ids)
+
+    async def check_budget_limits(self, session_key: str, config: Any) -> tuple[bool, str | None]:
         """Evaluate every configured spend ceiling for ``session_key``.
 
         Returns ``(hard_stop, message)``. ``hard_stop`` True means the caller
@@ -590,6 +669,21 @@ class UsageTracker:
         breached ceiling is never masked by a warning from an earlier scope.
         Warnings fire at most once per scope per day/session so a long-running
         session does not repeat the same alert on every turn.
+
+        Concurrent admission race: ``spend`` alone is a stale read once more
+        than one turn can be in flight for the same scope — subagent fan-out
+        spawns up to ``max_concurrent`` turns as concurrent asyncio tasks, and
+        none of them has recorded a cent until it finishes. Reading spend
+        without accounting for siblings already admitted-but-unspent would
+        let every one of them pass the same check simultaneously. Each
+        admission for a scope with a configured limit places a short-lived
+        reservation (see ``_DEFAULT_RESERVATION_USD`` /
+        ``_DEFAULT_RESERVATION_TTL_S``) that counts toward the ceiling for
+        every other concurrent check; the whole read-check-reserve sequence
+        is atomic under ``_budget_lock``. A reservation is never released
+        early just because the turn's real cost turns out lower — that is the
+        safe direction of error for a financial control: it can make the
+        ceiling trip a little early, never a little late.
         """
         if config is None or not getattr(config, "enabled", True):
             return False, None
@@ -597,9 +691,6 @@ class UsageTracker:
         agent_id, channel = self.get_session_scope(session_key)
         day = datetime.now(UTC).strftime("%Y-%m-%d")
 
-        # (log_event, label, warn_key, spend, limit, warn). Spend is only read
-        # for scopes that actually have a ceiling configured, so the default
-        # all-None config costs four dict lookups and no SQLite queries.
         checks: list[tuple[str, str, str, float, float | None, float | None]] = []
 
         session_limit = getattr(config, "session_limit", None)
@@ -658,19 +749,51 @@ class UsageTracker:
                 )
             )
 
-        for scope, label, _warn_key, spend, limit, _warn in checks:
-            if limit is not None and spend >= limit:
-                log.warning(
-                    "budget.limit_exceeded",
-                    scope=scope,
-                    session_key=session_key,
-                    spend=spend,
-                    limit=limit,
-                )
-                return (
-                    True,
-                    f"{label} ${spend:,.4f} has reached the ${limit:,.4f} budget limit.",
-                )
+        reservation_usd = float(
+            getattr(config, "reservation_usd", None) or _DEFAULT_RESERVATION_USD
+        )
+        reservation_ttl_s = float(
+            getattr(config, "reservation_ttl_seconds", None) or _DEFAULT_RESERVATION_TTL_S
+        )
+
+        async with self._budget_lock:
+            now = time.monotonic()
+
+            for scope, label, warn_key, spend, limit, _warn in checks:
+                if limit is None:
+                    continue
+                reserved = self._reserved_for(warn_key, now)
+                if spend + reserved >= limit:
+                    log.warning(
+                        "budget.limit_exceeded",
+                        scope=scope,
+                        session_key=session_key,
+                        spend=spend,
+                        reserved=reserved,
+                        limit=limit,
+                    )
+                    return (
+                        True,
+                        f"{label} ${spend:,.4f} has reached the ${limit:,.4f} budget limit.",
+                    )
+
+            # Every scope cleared the ceiling check above -- reserve against
+            # all of them now, inside the same lock acquisition, so a
+            # concurrent check starting the instant after this one releases
+            # the lock sees these reservations rather than racing them. Each
+            # gets a unique id recorded under this session so the turn can
+            # release exactly its own reservations when it ends.
+            placed: set[int] = set()
+            for scope, label, warn_key, spend, limit, _warn in checks:
+                if limit is not None:
+                    self._reservation_seq += 1
+                    res_id = self._reservation_seq
+                    self._reservations.setdefault(warn_key, []).append(
+                        (res_id, reservation_usd, now + reservation_ttl_s)
+                    )
+                    placed.add(res_id)
+            if placed:
+                self._session_reservation_ids.setdefault(session_key, set()).update(placed)
 
         for scope, label, warn_key, spend, _limit, warn in checks:
             if warn is None or spend < warn:

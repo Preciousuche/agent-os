@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `TurnRunner` and `UsageTracker` atomically reserve spend headroom at turn admission
+  and release on turn teardown across all exit paths, preventing concurrent subagent
+  fan-outs (`SubagentSpawner.spawn()`) from overshooting configured spend budget
+  ceilings on stale spend reads
+  ([#823](https://github.com/use-agent-os/agent-os/issues/823)).
+
 ## [2026.9.4] - 2026-09-04
 
 ### Fixed
