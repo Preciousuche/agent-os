@@ -646,6 +646,25 @@ def _classify_search_error(provider_name: str, exc: Exception) -> SearchProvider
     return None
 
 
+def _build_search_result(r: SearchResult) -> dict:
+    """Wrap a search result's model-facing text in the untrusted envelope.
+
+    ``title`` and ``snippet`` are attacker-controlled text fetched from a
+    third-party search index; wrapping them tags the origin the same way
+    web_fetch and browser wrap remote page content, so the model can tell
+    apart operator instructions from a page that got itself ranked.
+    """
+    from agentos.safety.injection_guard import wrap_untrusted_boundary
+
+    source_url = r.url or "unknown-source"
+    return {
+        "title": wrap_untrusted_boundary(r.title, source_url),
+        "url": r.url,
+        "snippet": wrap_untrusted_boundary(r.snippet, source_url),
+        "source": r.source or "",
+    }
+
+
 def _search_payload(
     query: str,
     provider_name: str,
@@ -657,15 +676,7 @@ def _search_payload(
     payload = {
         "query": query,
         "provider": provider_name,
-        "results": [
-            {
-                "title": r.title,
-                "url": r.url,
-                "snippet": r.snippet,
-                "source": r.source or "",
-            }
-            for r in results
-        ],
+        "results": [_build_search_result(r) for r in results],
     }
     if fallback_from:
         payload["fallback_from"] = fallback_from
