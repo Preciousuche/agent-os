@@ -27,8 +27,8 @@ _VERSION_RE = re.compile(
     r"^\s*v?"
     r"(?P<release>\d+(?:\.\d+)*)"
     r"(?:[._-]?(?P<pre_l>a|b|c|rc|alpha|beta|pre|preview)[._-]?(?P<pre_n>\d+)?)?"
-    r"(?:[._-]?post[._-]?(?P<post>\d+)?)?"
-    r"(?:[._-]?dev[._-]?(?P<dev>\d+)?)?"
+    r"(?:[._-]?(?P<post_kw>post)[._-]?(?P<post>\d+)?)?"
+    r"(?:[._-]?(?P<dev_kw>dev)[._-]?(?P<dev>\d+)?)?"
     r"(?:\+(?P<local>[a-zA-Z0-9.]+))?"
     r"\s*$",
     re.IGNORECASE,
@@ -100,12 +100,18 @@ def parse_version(value: str | None) -> Version:
     if match.group("pre_l"):
         pre_tag = match.group("pre_l").lower()
         pre = (_PRE_ORDER.get(pre_tag, 2), int(match.group("pre_n") or 0))
-    post = int(match.group("post")) if match.group("post") is not None else None
-    if post is None and re.search(r"[._-]?post", raw, re.IGNORECASE):
+    if match.group("post") is not None:
+        post = int(match.group("post"))
+    elif match.group("post_kw") is not None:
         post = 0
-    dev = int(match.group("dev")) if match.group("dev") is not None else None
-    if dev is None and re.search(r"[._-]?dev", raw, re.IGNORECASE):
+    else:
+        post = None
+    if match.group("dev") is not None:
+        dev = int(match.group("dev"))
+    elif match.group("dev_kw") is not None:
         dev = 0
+    else:
+        dev = None
     return Version(raw=raw, release=release, pre=pre, post=post, dev=dev, parsed=True)
 
 

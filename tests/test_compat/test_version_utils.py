@@ -54,6 +54,36 @@ def test_local_label_ignored_for_ordering() -> None:
     assert compare_versions("2026.7.18+abc", "2026.7.18") == 0
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected_post", "expected_dev"),
+    [
+        # local labels containing "dev"/"post" substrings must not leak into
+        # the parsed post/dev fields (#1130).
+        ("2026.7.18+dev", None, None),
+        ("2026.7.18+postgres", None, None),
+        ("2026.7.18+device", None, None),
+        ("2026.7.18+local.post1", None, None),
+        # bare .post / .dev (no trailing digit) still default to 0.
+        ("2026.7.18.post1", 1, None),
+        ("2026.7.18.dev1", None, 1),
+    ],
+)
+def test_local_label_does_not_leak_into_post_or_dev(
+    raw: str, expected_post: int | None, expected_dev: int | None
+) -> None:
+    v = parse_version(raw)
+    assert v.release == (2026, 7, 18)
+    assert v.post == expected_post
+    assert v.dev == expected_dev
+
+
+def test_local_label_with_dev_does_not_invert_ordering() -> None:
+    # A local/build-tagged final release must not sort as older than the
+    # same final release (it would if "+dev" were misread as ".dev0").
+    assert compare_versions("2026.7.18", "2026.7.18+dev") == 0
+    assert compare_versions("2026.7.18+postgres", "2026.7.18") == 0
+
+
 def test_unparsable_sorts_below_real_release() -> None:
     assert compare_versions("0.0.0+unknown", "2026.7.18") == -1
     assert compare_versions("garbage", "2026.7.18") == -1
