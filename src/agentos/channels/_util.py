@@ -117,6 +117,19 @@ class EventDedupeCache:
             self._seen.popitem(last=False)
         return True
 
+    def __contains__(self, event_id: str) -> bool:
+        """Non-mutating membership check.
+
+        A caller that needs to retry before marking an id as resolved (e.g.
+        a bounded retry loop) cannot use ``check_and_add`` for the initial
+        check: it marks the id as seen on the very first look, so a later
+        legitimate retry of the same id would be misread as a duplicate and
+        skipped instead of retried. This lets that caller peek first and
+        call ``check_and_add`` only once resolution (success or giving up)
+        actually happens.
+        """
+        return event_id in self._seen
+
 
 @dataclass
 class RateLimiter:

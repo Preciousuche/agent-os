@@ -189,6 +189,11 @@ class TelegramChannel:
     supports_slash_commands: bool = True
     typing_keepalive_interval_s: ClassVar[float] = 4.0
     MAX_FILE_BYTES: ClassVar[int] = 50 * 1024 * 1024
+    # Total attempts (including the first) a failing callback_query update
+    # gets across poll cycles before the poller gives up on it and advances
+    # past it anyway. Bounded so one permanently-failing callback cannot
+    # stall the whole poll loop behind it forever.
+    MAX_CALLBACK_ATTEMPTS: ClassVar[int] = 3
     policy: ChannelAccessPolicy = field(
         default_factory=lambda: ChannelAccessPolicy(
             dm_allowed=True,
@@ -205,6 +210,9 @@ class TelegramChannel:
     _poll_task: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
     _update_offset: int | None = field(default=None, init=False, repr=False)
     _dedupe: EventDedupeCache = field(init=False, repr=False)
+    # update_id -> attempts made so far for a callback_query that raised.
+    # Popped on success or once MAX_CALLBACK_ATTEMPTS is reached.
+    _callback_attempts: dict[int, int] = field(default_factory=dict, init=False, repr=False)
     _connected: bool = field(default=False, init=False, repr=False)
     _last_message_at: datetime | None = field(default=None, init=False, repr=False)
     _known_sender_profiles: dict[str, dict[str, str]] = field(
@@ -637,26 +645,87 @@ class TelegramChannel:
                 continue
             if not isinstance(updates, list):
                 updates = []
+            stalled = False
             for update in updates:
                 if not isinstance(update, dict):
                     continue
                 update_id = update.get("update_id")
+                if "callback_query" in update:
+                    if not await self._handle_polled_callback(update_id, update["callback_query"]):
+                        # Left un-acknowledged so the retry lands on the next
+                        # getUpdates call; stop here so nothing later in this
+                        # batch is processed ahead of the failed update.
+                        stalled = True
+                        break
+                    continue
                 if isinstance(update_id, int):
                     self._update_offset = update_id + 1
-                if "callback_query" in update:
-                    try:
-                        await self._handle_telegram_callback(update["callback_query"])
-                    except Exception as exc:
-                        log.warning("telegram.callback_query_handle_failed", error=str(exc))
-                    continue
                 try:
                     msg = self.parse_incoming(update)
                 except ValueError:
                     log.debug("telegram.unsupported_update_ignored", update_id=update_id)
                     continue
                 self.enqueue(msg)
-            if not updates:
+            if stalled or not updates:
                 await asyncio.sleep(self.config.poll_idle_sleep_s)
+
+    async def _handle_polled_callback(self, update_id: Any, cb: dict[str, Any]) -> bool:
+        """Handle one polled ``callback_query`` update.
+
+        Returns True once the offset may advance past *update_id* — the
+        callback was just handled, it was already resolved on a prior poll
+        (guards against a genuine Telegram redelivery of an id already
+        finished with; ``enqueue()`` gives the message path the same
+        protection via ``_dedupe``), or the retry budget is spent and it is
+        time to give up rather than stall the poll loop on one bad update
+        forever. Returns False to leave the update un-acknowledged: the
+        offset does not advance, so the next ``getUpdates`` call re-delivers
+        the same update for another attempt.
+        """
+        dedupe_key = f"callback:{update_id}" if isinstance(update_id, int) else None
+        if dedupe_key is not None and dedupe_key in self._dedupe:
+            self._advance_offset(update_id)
+            return True
+
+        try:
+            await self._handle_telegram_callback(cb)
+        except Exception as exc:
+            if not isinstance(update_id, int):
+                # No stable id to key a retry on; best effort as before.
+                log.warning("telegram.callback_query_handle_failed", error=str(exc))
+                return True
+            attempts = self._callback_attempts.get(update_id, 0) + 1
+            if attempts < self.MAX_CALLBACK_ATTEMPTS:
+                self._callback_attempts[update_id] = attempts
+                log.warning(
+                    "telegram.callback_query_handle_failed",
+                    error=str(exc),
+                    update_id=update_id,
+                    attempt=attempts,
+                    max_attempts=self.MAX_CALLBACK_ATTEMPTS,
+                )
+                return False
+            log.error(
+                "telegram.callback_query_permanently_failed",
+                error=str(exc),
+                update_id=update_id,
+                attempts=attempts,
+            )
+            self._callback_attempts.pop(update_id, None)
+            if dedupe_key is not None:
+                self._dedupe.check_and_add(dedupe_key)
+            self._advance_offset(update_id)
+            return True
+
+        self._callback_attempts.pop(update_id, None)
+        if dedupe_key is not None:
+            self._dedupe.check_and_add(dedupe_key)
+        self._advance_offset(update_id)
+        return True
+
+    def _advance_offset(self, update_id: Any) -> None:
+        if isinstance(update_id, int):
+            self._update_offset = update_id + 1
 
     def _get_updates_payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
