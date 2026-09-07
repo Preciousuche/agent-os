@@ -659,3 +659,55 @@ async def test_apply_patch_atomic_multi_op_success(tmp_path: Path) -> None:
     assert file_mod.read_text(encoding="utf-8") == "new text\n"
     assert not file_del.exists()
 
+
+@pytest.mark.asyncio
+async def test_apply_patch_failure_names_the_failing_operation(tmp_path: Path) -> None:
+    """A multi-op batch failure must say which op failed, not just the
+    underlying mismatch — the file/op position is the only extra diagnostic
+    a caller gets beyond the raw hunk error (review request on #1169)."""
+    file2 = tmp_path / "file2.txt"
+    file2.write_text("original line\n", encoding="utf-8")
+
+    token = current_tool_context.set(ToolContext(workspace_dir=str(tmp_path)))
+    apply_patch = _original_async(patch_tool.apply_patch)
+    try:
+        with pytest.raises(
+            ValueError, match=r"Operation 2/2 \(UpdateFile 'file2\.txt'\) failed: Context mismatch"
+        ):
+            await apply_patch(
+                """*** Begin Patch
+*** Add File: file1.txt
++staged content
+*** Update File: file2.txt
+@@@ -1,1 +1,1 @@@
+-wrong context line
++replacement line
+*** End Patch"""
+            )
+    finally:
+        current_tool_context.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_commit_leaves_no_temp_files_behind(tmp_path: Path) -> None:
+    """Phase 2 writes via a temp-file-plus-rename; a successful run must not
+    leave the intermediate temp file sitting next to the real one."""
+    target = tmp_path / "file.txt"
+    target.write_text("old\n", encoding="utf-8")
+
+    token = current_tool_context.set(ToolContext(workspace_dir=str(tmp_path)))
+    apply_patch = _original_async(patch_tool.apply_patch)
+    try:
+        await apply_patch(
+            """*** Begin Patch
+*** Update File: file.txt
+@@@ -1,1 +1,1 @@@
+-old
++new
+*** End Patch"""
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert target.read_text(encoding="utf-8") == "new\n"
+    assert list(tmp_path.iterdir()) == [target]

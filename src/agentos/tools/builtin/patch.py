@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -502,85 +504,85 @@ def _apply_hunk(file_lines: list[str], hunk: Hunk) -> list[str]:
     return result[:pos] + new_lines + result[pos + hunk.old_count :]
 
 
-def _apply_update(path: str, hunks: list[Hunk], root: Path | None = None) -> None:
-    resolved = _validate_path(path, root)
-    if not resolved.exists():
-        raise FileNotFoundError(f"File not found for update: {path}")
-
-    text = resolved.read_text(encoding="utf-8")
-    lines = text.splitlines(keepends=True)
-
-    # Apply hunks in reverse order so earlier line numbers stay valid
-    for hunk in sorted(hunks, key=lambda h: h.old_start, reverse=True):
-        lines = _apply_hunk(lines, hunk)
-
-    resolved.write_text("".join(lines), encoding="utf-8")
-
-
-def _apply_add(path: str, content: str, root: Path | None = None) -> None:
-    resolved = _validate_path(path, root)
-    if resolved.exists():
-        raise FileExistsError(f"File already exists: {path}")
-    resolved.parent.mkdir(parents=True, exist_ok=True)
-    resolved.write_text(content, encoding="utf-8")
-
-
-def _apply_delete(path: str, root: Path | None = None) -> None:
-    resolved = _validate_path(path, root)
-    if not resolved.exists():
-        raise FileNotFoundError(f"File not found for deletion: {path}")
-    resolved.unlink()
+def _write_file_atomic(path: Path, content: str) -> None:
+    """Write *content* to *path* so a crash or full disk cannot leave a
+    truncated file: write to a sibling temp file first, then rename onto the
+    real path. os.replace() is atomic on both POSIX and Windows, unlike
+    write_text(), which truncates the target before the new bytes land."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as tmp_file:
+            tmp_file.write(content)
+        os.replace(tmp_name, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_name)
+        raise
 
 
 def _apply_ops(ops: list[PatchOp], root: Path | None = None) -> tuple[int, int, int]:
     """Execute all patch operations atomically. Returns (added, modified, deleted) counts."""
     staged: dict[Path, str | None] = {}
 
-    # Phase 1: Dry-run validation and in-memory staging
-    for op in ops:
-        if isinstance(op, AddFile):
-            resolved = _validate_path(op.path, root)
-            if resolved in staged:
-                if staged[resolved] is not None:
+    # Phase 1: Dry-run validation and in-memory staging. Every failure here
+    # is prefixed with which operation in the batch it came from — the
+    # underlying exception (context mismatch, missing file, ...) does not
+    # otherwise name the file or the op's position, which is the only
+    # diagnostic a caller with a multi-op patch would get.
+    for i, op in enumerate(ops):
+        try:
+            if isinstance(op, AddFile):
+                resolved = _validate_path(op.path, root)
+                if resolved in staged:
+                    if staged[resolved] is not None:
+                        raise FileExistsError(f"File already exists: {op.path}")
+                elif resolved.exists():
                     raise FileExistsError(f"File already exists: {op.path}")
-            elif resolved.exists():
-                raise FileExistsError(f"File already exists: {op.path}")
-            staged[resolved] = op.content
+                staged[resolved] = op.content
 
-        elif isinstance(op, UpdateFile):
-            resolved = _validate_path(op.path, root)
-            if resolved in staged:
-                staged_content = staged[resolved]
-                if staged_content is None:
-                    raise FileNotFoundError(f"File not found for update: {op.path}")
-                text = staged_content
-            else:
-                if not resolved.exists():
-                    raise FileNotFoundError(f"File not found for update: {op.path}")
-                text = resolved.read_text(encoding="utf-8")
+            elif isinstance(op, UpdateFile):
+                resolved = _validate_path(op.path, root)
+                if resolved in staged:
+                    staged_content = staged[resolved]
+                    if staged_content is None:
+                        raise FileNotFoundError(f"File not found for update: {op.path}")
+                    text = staged_content
+                else:
+                    if not resolved.exists():
+                        raise FileNotFoundError(f"File not found for update: {op.path}")
+                    text = resolved.read_text(encoding="utf-8")
 
-            lines = text.splitlines(keepends=True)
-            for hunk in sorted(op.hunks, key=lambda h: h.old_start, reverse=True):
-                lines = _apply_hunk(lines, hunk)
-            staged[resolved] = "".join(lines)
+                lines = text.splitlines(keepends=True)
+                for hunk in sorted(op.hunks, key=lambda h: h.old_start, reverse=True):
+                    lines = _apply_hunk(lines, hunk)
+                staged[resolved] = "".join(lines)
 
-        elif isinstance(op, DeleteFile):
-            resolved = _validate_path(op.path, root)
-            if resolved in staged:
-                if staged[resolved] is None:
+            elif isinstance(op, DeleteFile):
+                resolved = _validate_path(op.path, root)
+                if resolved in staged:
+                    if staged[resolved] is None:
+                        raise FileNotFoundError(f"File not found for deletion: {op.path}")
+                elif not resolved.exists():
                     raise FileNotFoundError(f"File not found for deletion: {op.path}")
-            elif not resolved.exists():
-                raise FileNotFoundError(f"File not found for deletion: {op.path}")
-            staged[resolved] = None
+                staged[resolved] = None
+        except (ValueError, FileNotFoundError, FileExistsError) as exc:
+            raise type(exc)(
+                f"Operation {i + 1}/{len(ops)} ({type(op).__name__} {op.path!r}) failed: {exc}"
+            ) from exc
 
-    # Phase 2: Atomic commit to disk once all operations have validated
+    # Phase 2: Commit to disk once every operation has validated. Each write
+    # is atomic on its own (see _write_file_atomic); a batch that spans
+    # multiple files still cannot be made atomic *across* files without a
+    # journal, but phase 1 having already validated every op means phase 2
+    # should only ever fail here for OS-level reasons (permissions, disk
+    # full) that no amount of pre-validation can rule out in advance.
     for path, content in staged.items():
         if content is None:
             if path.exists():
                 path.unlink()
         else:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content, encoding="utf-8")
+            _write_file_atomic(path, content)
 
     added = sum(1 for op in ops if isinstance(op, AddFile))
     modified = sum(1 for op in ops if isinstance(op, UpdateFile))
