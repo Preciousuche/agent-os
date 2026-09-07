@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import SYMLINKS_SUPPORTED
+from _symlink_support import SYMLINKS_SUPPORTED
 
 from agentos.skills.hub import deps
 from agentos.skills.install_kinds import InstallSpecError

@@ -14,7 +14,7 @@ import os
 from pathlib import Path
 
 import pytest
-from conftest import SYMLINKS_SUPPORTED
+from _symlink_support import SYMLINKS_SUPPORTED
 
 from agentos.memory.curated import (
     _CONSOLIDATION_FAILURE_WINDOW_S,

@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from conftest import SYMLINKS_SUPPORTED
+from _symlink_support import SYMLINKS_SUPPORTED
 
 from agentos.scheduler.delivery import DeliveryChain
 from agentos.scheduler.handlers import make_script_run_handler
