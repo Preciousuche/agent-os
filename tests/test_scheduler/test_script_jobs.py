@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from conftest import SYMLINKS_SUPPORTED
 
 from agentos.scheduler.delivery import DeliveryChain
 from agentos.scheduler.handlers import make_script_run_handler
@@ -100,6 +101,7 @@ def test_absolute_path_outside_scripts_dir_is_blocked(agentos_home):
         resolve_script_path("/etc/passwd")
 
 
+@pytest.mark.skipif(not SYMLINKS_SUPPORTED, reason="platform/user lacks symlink privilege")
 def test_symlink_escape_is_blocked(agentos_home, tmp_path):
     outside = tmp_path / "outside.py"
     outside.write_text("print('pwned')", encoding="utf-8")
