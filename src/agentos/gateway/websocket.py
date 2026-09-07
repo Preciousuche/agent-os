@@ -13,6 +13,7 @@ import structlog
 from starlette.websockets import WebSocket, WebSocketDisconnect, WebSocketState
 
 from agentos import __version__
+from agentos.asyncio_utils import create_background_task
 from agentos.gateway.access import ConnectionSurface
 from agentos.gateway.auth import AccessContext
 from agentos.gateway.config import GatewayConfig
@@ -492,7 +493,7 @@ class WsConnection:
             stream_seq=_payload_field(frame.payload, "stream_seq"),
             queue_depth=self._outbox.qsize(),
         )
-        asyncio.create_task(
+        create_background_task(
             self._force_close(reason="writer_backpressure", code=1011),
             name=f"ws-force-close-{self.conn_id}",
         )

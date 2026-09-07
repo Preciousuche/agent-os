@@ -29,6 +29,7 @@ from typing import Any, Final, Literal, SupportsInt, TypeGuard, cast
 import structlog
 
 from agentos.artifacts import artifact_marker
+from agentos.asyncio_utils import create_background_task
 from agentos.attachment_refs import (
     is_attachment_ref,
     read_attachment_ref_bytes,
@@ -5825,7 +5826,7 @@ class TurnRunner:
         mark_status = getattr(self._session_manager, "mark_compaction_flush_receipt_status", None)
         if not callable(mark_status):
             return
-        asyncio.create_task(
+        create_background_task(
             mark_compaction_flush_status_with_retry(
                 mark_status,
                 session_key=session_key,

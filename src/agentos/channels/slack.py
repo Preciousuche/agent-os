@@ -21,6 +21,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
+from agentos.asyncio_utils import create_background_task
 from agentos.channels._reactions import NULL_STATUS_REACTOR, SlackStatusReactor
 from agentos.channels._util import (
     ChannelAccessPolicy,
@@ -722,7 +723,7 @@ class SlackChannel:
             return
         if mtype == "interactive":
             if isinstance(payload, dict):
-                asyncio.create_task(self._handle_slack_interactive(payload))
+                create_background_task(self._handle_slack_interactive(payload))
             return
         if mtype != "events_api":
             return
@@ -794,7 +795,7 @@ class SlackChannel:
                     payload = json.loads(payload_str)
                 except Exception:
                     return Response(status_code=400)
-                asyncio.create_task(self._handle_slack_interactive(payload))
+                create_background_task(self._handle_slack_interactive(payload))
                 return Response(status_code=200)
             if not self._ingest_slash_command(form):
                 return Response(status_code=400)

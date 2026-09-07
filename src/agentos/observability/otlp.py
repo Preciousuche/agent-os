@@ -12,6 +12,7 @@ from typing import Any
 import structlog
 
 from agentos import __version__
+from agentos.asyncio_utils import create_background_task
 from agentos.env import trust_env as _trust_env
 from agentos.observability.trace import TraceEvent, TraceSink
 
@@ -146,7 +147,7 @@ class OtlpTraceSink(TraceSink):
             try:
                 loop = asyncio.get_running_loop()
                 if loop.is_running():
-                    loop.create_task(self.flush())
+                    create_background_task(self.flush())
             except RuntimeError:
                 pass
 
