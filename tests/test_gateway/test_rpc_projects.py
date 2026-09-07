@@ -141,6 +141,39 @@ class TestProjectsListGetUpdateDelete:
         assert winner.payload["project"]["knowledge"] == "v3"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad_expected", [True, False])
+    async def test_update_rejects_boolean_expected_updated_at(
+        self, dispatcher, ctx, bad_expected
+    ) -> None:
+        """bool is a subclass of int in Python, so a bare isinstance(x, int)
+        check lets True/False sail through and reach the compare-and-swap as
+        1/0, which can never match a real millisecond timestamp -- producing
+        a misleading project.conflict instead of a validation error (#1261).
+        A caller that reasonably retries on conflict would loop forever,
+        since resending the same boolean can never satisfy the CAS check.
+        """
+        project = await _create_project(dispatcher, ctx)
+        res = await dispatcher.dispatch(
+            "r1",
+            "projects.update",
+            {
+                "projectId": project["project_id"],
+                "knowledge": "v2",
+                "expectedUpdatedAt": bad_expected,
+            },
+            ctx,
+        )
+        assert res.ok is False
+        assert res.error.code == "INVALID_REQUEST"
+        assert res.error.code != "project.conflict"
+        assert "expectedUpdatedAt" in res.error.message
+        # The malformed write must not have landed, same as a real conflict.
+        fresh = await dispatcher.dispatch(
+            "r2", "projects.get", {"projectId": project["project_id"]}, ctx
+        )
+        assert fresh.payload["project"]["knowledge"] == "Shared facts."
+
+    @pytest.mark.asyncio
     async def test_delete_reports_detached_sessions(self, dispatcher, ctx, manager):
         project = await _create_project(dispatcher, ctx)
         await manager.create(
