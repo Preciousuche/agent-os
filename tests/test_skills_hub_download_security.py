@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from conftest import SYMLINKS_SUPPORTED
 
 from agentos.skills.hub import deps
 from agentos.skills.install_kinds import InstallSpecError
@@ -67,6 +68,7 @@ def test_resolve_download_dest_accepts_a_plain_binary_name(fake_home: Path) -> N
     assert dest == fake_home / ".local" / "bin" / "ripgrep"
 
 
+@pytest.mark.skipif(not SYMLINKS_SUPPORTED, reason="platform/user lacks symlink privilege")
 def test_resolve_download_dest_refuses_to_write_through_a_symlink(fake_home: Path) -> None:
     outside = fake_home / "secret.txt"
     outside.write_text("original", encoding="utf-8")

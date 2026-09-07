@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 
 import pytest
+from conftest import SYMLINKS_SUPPORTED
 
 from agentos.memory.curated import (
     _CONSOLIDATION_FAILURE_WINDOW_S,
@@ -150,6 +151,7 @@ def test_drift_still_detected_and_backed_up(store: CuratedMemoryStore, tmp_path:
 # -- atomic replace preserves symlinks -------------------------------------
 
 
+@pytest.mark.skipif(not SYMLINKS_SUPPORTED, reason="platform/user lacks symlink privilege")
 def test_write_through_symlink_keeps_the_symlink(tmp_path: Path):
     """Deployments symlink MEMORY.md into dotfiles; a write must not detach it."""
     real_dir = tmp_path / "real"
