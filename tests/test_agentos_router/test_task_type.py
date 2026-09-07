@@ -122,6 +122,70 @@ class TestProgrammingLanguageTarget:
         assert verdict.task_type == TASK_TYPE_TRANSLATE
 
 
+class TestSymbolPortTargets:
+    """C++, C#, and .NET end/start on a non-word character, so the plain
+    \\b(?:...)\\b group that blocks python/rust/etc. never fires for them in
+    ordinary prose (#1198) — a C++/C#/.NET port request was silently
+    misrouted to the cheapest model tier instead of being recognized as
+    code work. These three get their own boundary shape in _CODE_TARGET_RE;
+    this class is the regression suite for that shape specifically.
+    """
+
+    @pytest.mark.parametrize(
+        ("message", "target"),
+        [
+            ("Translate this function to C++.", "C++"),
+            ("Translate this code to C#.", "C#"),
+            ("Translate this service to .NET.", ".NET"),
+            # Case-insensitivity and a mid-sentence (not sentence-final)
+            # mention must both still trigger the guard.
+            ("Please translate this to c++ for the embedded team.", "c++"),
+            ("We need this ported to c# next sprint, then translate the docs.", "c#"),
+            ("Translate the API surface to .net so it matches the rest.", ".net"),
+        ],
+    )
+    def test_symbol_targets_block_the_translate_verdict(self, message: str, target: str) -> None:
+        verdict = detect_task_type(message)
+        assert verdict.task_type is None, f"{target!r} in {message!r} should have blocked"
+        assert verdict.blocked_by == BLOCK_CODE_TARGET
+
+    def test_plain_word_target_still_blocks_for_contrast(self) -> None:
+        """Rust already worked before this fix; it must keep working after."""
+        verdict = detect_task_type("Translate this function to Rust.")
+        assert verdict.task_type is None
+        assert verdict.blocked_by == BLOCK_CODE_TARGET
+
+    def test_natural_language_target_is_not_blocked(self) -> None:
+        """The case the suppression exists to protect: an ordinary human
+        language target must still translate, unaffected by the C++/C#/.NET
+        boundary change."""
+        verdict = detect_task_type("Translate this to Spanish.")
+        assert verdict.task_type == TASK_TYPE_TRANSLATE
+        assert verdict.blocked_by is None
+
+    def test_bare_letter_c_does_not_falsely_block(self) -> None:
+        """'c' alone (no '++' or '#') must not be mistaken for C++/C#."""
+        verdict = detect_task_type("Translate this sentence to c, please.")
+        assert verdict.task_type == TASK_TYPE_TRANSLATE
+        assert verdict.blocked_by is None
+
+    def test_hash_symbol_followed_by_a_word_does_not_match_c_sharp(self) -> None:
+        """(?!\\w) after 'c#' must reject a 'c#' glued onto more word chars,
+        the same way \\b already rejects it for the plain-word targets."""
+        verdict = detect_task_type("Translate this to c#sharpener, a made-up tool name.")
+        assert verdict.task_type == TASK_TYPE_TRANSLATE
+        assert verdict.blocked_by is None
+
+    def test_dotnet_inside_a_compound_token_keeps_prior_behavior(self) -> None:
+        """.NET drops its leading \\b (a '.' has no meaningful word-transition
+        to require), which means it keeps matching inside a token like
+        'asp.net' exactly as it already did before this fix — this pins
+        that as an intentional non-change, not a new regression."""
+        verdict = detect_task_type("Translate this asp.net tutorial into French.")
+        assert verdict.task_type is None
+        assert verdict.blocked_by == BLOCK_CODE_TARGET
+
+
 class TestScanWindow:
     """Instructions bracket a pasted body; the middle is not scanned."""
 

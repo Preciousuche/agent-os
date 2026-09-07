@@ -123,11 +123,28 @@ _TRANSLATE_RES: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
 #: is the only guard — it exists because the task is different, not because the
 #: translation is judged hard. Suppression is the safe direction: it forfeits a
 #: saving and hands the turn back to ordinary model routing.
+#: C++, C#, and .NET cannot share the plain-word \b(?:...)\b group above:
+#: \b requires a transition between a \w and a non-\w character on the exact
+#: side being anchored. "C++" ends on "+" (non-word), so the trailing \b in
+#: "...to C++." never fires (the following "." is also non-word — no
+#: transition). Same shape for "C#" ending on "#". ".NET" starts on "."
+#: (non-word), so the *leading* \b fails whenever a normal sentence precedes
+#: it with whitespace (space -> "." is non-word on both sides) — it only
+#: ever matched by accident when glued onto a word, e.g. "asp.net" ("p" ->
+#: "." is a real transition). These three get their own boundary shape
+#: instead: (?!\w) after the C++/C# tail only requires the *next* character
+#: not be a word character (satisfied by end-of-string, space, or
+#: punctuation alike, unlike \b). ".NET" drops the leading \b entirely
+#: (a "." has no meaningful word-transition to require) and keeps only the
+#: trailing \b, which preserves today's "asp.net" match instead of breaking
+#: it (#1198).
 _CODE_TARGET_RE = re.compile(
     r"\b(?:python|javascript|typescript|golang|rust|java|kotlin|swift|scala"
     r"|haskell|ruby|php|perl|sql|bash|powershell|matlab|fortran|cobol"
-    r"|c\+\+|c#|\.net|react|vue|svelte|jquery|regex|assembly|solidity"
-    r"|dart|elixir|erlang|clojure|lua|zig)\b",
+    r"|react|vue|svelte|jquery|regex|assembly|solidity"
+    r"|dart|elixir|erlang|clojure|lua|zig)\b"
+    r"|\b(?:c\+\+|c#)(?!\w)"
+    r"|\.net\b",
     re.IGNORECASE,
 )
 
