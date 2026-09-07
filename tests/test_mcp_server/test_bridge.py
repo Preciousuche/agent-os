@@ -392,6 +392,42 @@ async def test_events_wait_remaining_never_exceeds_effective_timeout(
 
 
 @pytest.mark.asyncio
+async def test_events_wait_remaining_pinned_clock_reading_from_1264(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1264's exact deterministic repro: a *single* time.monotonic() reading
+    used for both the deadline and the first "remaining" computation. Real
+    calls are microseconds apart, but the rounding artifact this guards
+    against doesn't need two different readings -- (t + 300.0) - t fails to
+    cancel back to exactly 300.0 for this specific t on its own, landing at
+    300.0000000000018 pre-fix. #1264 sampled ~400k plausible monotonic()
+    values and found this shape on about 1 in 1700 of them, which is what
+    made test_events_wait_clamps_effective_deadline (above) an intermittent
+    Windows CI flake on unrelated pull requests rather than a local
+    reproduction anyone could pin down.
+
+    Rebinds the module-level `time` name (as the other rounding test above
+    does) rather than mutating the real time module's .monotonic attribute,
+    which would also corrupt asyncio's own internal timing during the test.
+    """
+    client = RecordingEventClient()
+    bridge = AgentOSMCPBridge(gateway_client_factory=lambda: client)
+
+    class _FakeTime:
+        @staticmethod
+        def monotonic() -> float:
+            return 16330.771337564662
+
+    monkeypatch.setattr(bridge_module, "time", _FakeTime())
+
+    await bridge.events_wait("agent:main:main", timeout_ms=3_600_000)
+
+    assert client.recv_timeouts
+    first_timeout = client.recv_timeouts[0]
+    assert first_timeout == bridge_module._MAX_EVENTS_WAIT_TIMEOUT_MS / 1000
+
+
+@pytest.mark.asyncio
 async def test_events_wait_preserves_timeout_below_the_cap() -> None:
     client = RecordingEventClient()
     bridge = AgentOSMCPBridge(gateway_client_factory=lambda: client)
