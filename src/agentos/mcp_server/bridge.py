@@ -157,10 +157,18 @@ class AgentOSMCPBridge:
             )
             max_events = _clamp_limit(max_events, _MAX_EVENTS_WAIT_EVENTS)
             timeout_ms = min(max(0, timeout_ms), _MAX_EVENTS_WAIT_TIMEOUT_MS)
-            deadline = time.monotonic() + timeout_ms / 1000
+            effective_timeout_s = timeout_ms / 1000
+            deadline = time.monotonic() + effective_timeout_s
 
             while len(events) < max_events:
-                remaining = deadline - time.monotonic()
+                # min(..., effective_timeout_s): deadline - time.monotonic()
+                # can round *above* effective_timeout_s by a few nanoseconds
+                # of float error (two monotonic() readings added and
+                # subtracted back rarely cancel exactly at large clock
+                # values), which would hand recv_event a timeout a hair
+                # over the caller's clamp. The clamp is the contract; the
+                # min() makes it exact instead of "usually exact".
+                remaining = min(deadline - time.monotonic(), effective_timeout_s)
                 if remaining <= 0:
                     break
                 try:

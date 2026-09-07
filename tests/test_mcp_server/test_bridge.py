@@ -357,6 +357,41 @@ async def test_events_wait_clamps_effective_deadline() -> None:
 
 
 @pytest.mark.asyncio
+async def test_events_wait_remaining_never_exceeds_effective_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """deadline - time.monotonic() can round a hair above the intended
+    clamp: two time.monotonic() readings added and then subtracted back
+    rarely cancel exactly in float64 once the clock's base value is large
+    (a long-uptime CI runner, say), so the per-call recv timeout must be
+    clamped explicitly rather than trusted to always come out <=
+    effective_timeout_s on its own."""
+    client = RecordingEventClient()
+    bridge = AgentOSMCPBridge(gateway_client_factory=lambda: client)
+
+    # First call computes the deadline; second computes the first
+    # "remaining", using a reading fractionally *before* the first -- the
+    # same shape a real float64 rounding artifact produces. Rebinding the
+    # module-level `time` name (rather than mutating the real time module)
+    # keeps this from also breaking asyncio's own internal timing.
+    readings = iter([1_000_000.0, 999_999.9999999])
+
+    class _FakeTime:
+        @staticmethod
+        def monotonic() -> float:
+            return next(readings)
+
+    monkeypatch.setattr(bridge_module, "time", _FakeTime())
+
+    await bridge.events_wait("agent:main:main", timeout_ms=3_600_000)
+
+    assert client.recv_timeouts
+    first_timeout = client.recv_timeouts[0]
+    assert first_timeout is not None
+    assert first_timeout <= bridge_module._MAX_EVENTS_WAIT_TIMEOUT_MS / 1000
+
+
+@pytest.mark.asyncio
 async def test_events_wait_preserves_timeout_below_the_cap() -> None:
     client = RecordingEventClient()
     bridge = AgentOSMCPBridge(gateway_client_factory=lambda: client)
