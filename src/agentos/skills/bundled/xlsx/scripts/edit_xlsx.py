@@ -4,8 +4,24 @@ Operations:
     {"op": "set_cell", "sheet": "Q3", "row": 1, "col": 1, "value": "..."}
     {"op": "set_cell", "sheet": "Q3", "row": 2, "col": 2, "value": "=SUM(B3:B10)"}
     {"op": "set_cell", "sheet": "Q3", "row": 3, "col": 3, "value": "=hello", "as_text": true}
+    {"op": "set_cell", "sheet": "Q3", "row": 4, "col": 4, "value": null}
     {"op": "rename_sheet", "old": "Sheet1", "new": "Summary"}
     {"op": "merge_cells", "sheet": "Q3", "range": "A1:C1"}
+
+set_cell "value" semantics:
+    An explicit JSON ``null`` clears the cell (sets it to ``None``). This is
+    the only way to express "clear this cell" in this op schema, so it is
+    treated as a clear rather than a no-op — openpyxl's own
+    ``Worksheet.cell(..., value=...)`` does the opposite (``if value is not
+    None: cell.value = value``, silently leaving an existing value in place
+    for an explicit null), which is a trap this script does not repeat: the
+    cell's ``.value`` is always assigned directly instead of going through
+    that keyword.
+    A missing "value" key is not a clear — the whole operation is skipped
+    (and not counted in "applied") rather than risk a malformed op silently
+    wiping a cell it never meant to touch.
+    ``0``, ``false``, and ``""`` are ordinary values, not clears; only a
+    literal ``null`` triggers clear semantics.
 """
 
 from __future__ import annotations
@@ -41,11 +57,24 @@ def apply_ops(wb: Any, ops: list[dict[str, Any]]) -> int:
             sheet_name = op.get("sheet")
             row = op.get("row")
             col = op.get("col")
-            value = op.get("value")
             if sheet_name not in wb.sheetnames or row is None or col is None:
                 continue
+            if "value" not in op:
+                # No value supplied at all: nothing to apply. Treating a
+                # missing key the same as an explicit null would let a
+                # malformed operation silently clear a cell it never named
+                # a value for.
+                continue
+            value = op["value"]
             ws = wb[sheet_name]
-            ws.cell(row=int(row), column=int(col), value=_coerce(value, bool(op.get("as_text"))))
+            # ws.cell(row=..., column=..., value=...) only assigns when
+            # value is not None, so routing an explicit null through that
+            # keyword is a silent no-op. Fetch the cell first, then assign
+            # .value directly in both branches — the only way to actually
+            # clear a cell, and it leaves the cell's style untouched either
+            # way, same as the keyword form did for a non-null value.
+            cell = ws.cell(row=int(row), column=int(col))
+            cell.value = value if value is None else _coerce(value, bool(op.get("as_text")))
             applied += 1
         elif kind == "rename_sheet":
             old = op.get("old")
