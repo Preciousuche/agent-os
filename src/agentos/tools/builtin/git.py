@@ -211,6 +211,16 @@ async def git_commit(
             await _run_git("add", "--", *files, cwd=cwd)
     else:
         await _run_git("add", "-A", cwd=cwd)
+
+    # files=[] deliberately stages nothing new, so the index may still be
+    # empty (or unchanged from before this call). `git commit` would fail
+    # with its own "nothing to commit" text as an uncaught RuntimeError from
+    # _run_git; checking first lets an empty commit attempt return a plain
+    # result instead.
+    staged = await _run_git("diff", "--cached", "--name-only", cwd=cwd)
+    if not staged.strip():
+        return "Nothing staged to commit."
+
     return await _run_git("commit", "-m", message, cwd=cwd)
 
 
