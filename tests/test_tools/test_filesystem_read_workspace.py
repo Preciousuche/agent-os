@@ -410,3 +410,27 @@ async def test_list_dir_broken_symlink_does_not_crash(tmp_path: Path) -> None:
     assert "[file] valid.txt" in output
     assert "broken_link.txt" in output
 
+
+@pytest.mark.asyncio
+async def test_edit_file_records_workspace_write(tmp_path: Path) -> None:
+    """edit_file only ever touches an existing file (it raises if the target
+    is missing), so unlike write_file it has no "first write" case at all --
+    every call is the update path, and it must always be tracked for
+    artifact delivery, not just sometimes (companion to #1205)."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "report.html"
+    target.write_text("<h1>Initial</h1>", encoding="utf-8")
+    ctx = ToolContext(workspace_dir=str(workspace))
+    token = current_tool_context.set(ctx)
+    raw_edit_file = fs.edit_file.__wrapped__.__wrapped__
+    try:
+        await raw_edit_file(str(target), "Initial", "Updated")
+        assert len(ctx.workspace_file_writes) == 1
+        assert ctx.workspace_file_writes[0]["name"] == "report.html"
+
+        await raw_edit_file(str(target), "Updated", "Updated Again")
+        assert len(ctx.workspace_file_writes) == 2
+        assert ctx.workspace_file_writes[1]["name"] == "report.html"
+    finally:
+        current_tool_context.reset(token)

@@ -246,14 +246,49 @@ class _EditedConfigProvider:
                 tool_use_id="edit-1",
                 tool_name="edit_file",
                 arguments={
-                    "path": "config.json",
-                    "old_text": "\"enabled\": false",
-                    "new_text": "\"enabled\": true",
+                    "path": "config.yaml",
+                    "old_text": "enabled: false",
+                    "new_text": "enabled: true",
                 },
             )
             yield ProviderDone(stop_reason="tool_use", input_tokens=1, output_tokens=1)
             return
-        yield ProviderText(text="Updated config.json.")
+        yield ProviderText(text="Updated config.yaml.")
+        yield ProviderDone(stop_reason="stop", input_tokens=1, output_tokens=1)
+
+    async def list_models(self) -> list[ModelInfo]:
+        return []
+
+
+class _EditedDeliverableProvider:
+    provider_name = "test"
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.model = "test/model"
+
+    def chat(self, messages: list[Message], tools=None, config=None) -> AsyncIterator[Any]:
+        self.calls += 1
+        return self._stream(self.calls)
+
+    async def _stream(self, call_number: int) -> AsyncIterator[Any]:
+        if call_number == 1:
+            yield ProviderToolUseStart(
+                tool_use_id="edit-1",
+                tool_name="edit_file",
+            )
+            yield ProviderToolUseEnd(
+                tool_use_id="edit-1",
+                tool_name="edit_file",
+                arguments={
+                    "path": "manual-edit.html",
+                    "old_text": "Old",
+                    "new_text": "New",
+                },
+            )
+            yield ProviderDone(stop_reason="tool_use", input_tokens=1, output_tokens=1)
+            return
+        yield ProviderText(text="Updated manual-edit.html for you.")
         yield ProviderDone(stop_reason="stop", input_tokens=1, output_tokens=1)
 
     async def list_models(self) -> list[ModelInfo]:
@@ -837,7 +872,81 @@ async def test_turn_runner_auto_publishes_deliverable_file_when_model_omits_publ
 
 
 @pytest.mark.asyncio
-async def test_turn_runner_does_not_auto_publish_edited_config_json(tmp_path) -> None:
+async def test_turn_runner_auto_publishes_edited_deliverable_file(tmp_path) -> None:
+    """edit_file's companion to the write_file overwrite case fixed
+    alongside it: edit_file never went through record_workspace_file_write
+    at all, so an edited deliverable was never auto-published regardless of
+    whether it was the first change or the hundredth (#1205 sibling bug)."""
+    storage = SessionStorage(":memory:")
+    await storage.connect()
+    manager = SessionManager(storage)
+    session_key = "agent:main:webchat:artifact-edit-omitted"
+    session = await manager.create(session_key)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "manual-edit.html").write_text(
+        "<!doctype html><title>Old</title>", encoding="utf-8"
+    )
+
+    runner = TurnRunner(
+        provider_selector=_ProviderSelector(_EditedDeliverableProvider()),
+        tool_registry=_edit_file_registry(),
+        session_manager=manager,
+        config=GatewayConfig(
+            attachments=AttachmentsConfig(media_root=str(tmp_path / "media")),
+            agentos_router=AgentOSRouterConfig(enabled=False),
+        ),
+    )
+    tool_context = ToolContext(
+        caller_kind=CallerKind.WEB,
+        workspace_dir=str(workspace),
+        allowed_tools={"edit_file"},
+        elevated="full",
+    )
+
+    try:
+        events = [
+            event
+            async for event in runner.run(
+                "update the html page",
+                session_key,
+                tool_context=tool_context,
+                history_has_persisted_user=False,
+                no_memory_capture=True,
+            )
+        ]
+
+        artifact_events = [event for event in events if isinstance(event, ArtifactEvent)]
+        assert len(artifact_events) == 1
+        assert artifact_events[0].name == "manual-edit.html"
+        assert artifact_events[0].mime == "text/html"
+        assert artifact_events[0].session_id == session.session_id
+
+        transcript = await manager.get_transcript(session_key)
+        assistant = [entry for entry in transcript if entry.role == "assistant"][-1]
+        payload = json.loads(assistant.content)
+        assert payload["text"] == "Updated manual-edit.html for you."
+        assert payload["artifacts"][0]["name"] == "manual-edit.html"
+        assert payload["artifacts"][0]["source"] == "auto_publish_omitted"
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_turn_runner_does_not_auto_publish_edited_config_yaml(tmp_path) -> None:
+    """A file with no deliverable suffix is never auto-published, no matter
+    how it was written or whether the assistant names it in its final text.
+
+    This used to use config.json, but .json is itself a real deliverable
+    suffix in _DELIVERABLE_SUFFIXES (JSON data exports are a legitimate
+    auto-publish case) -- the old test only ever passed because edit_file
+    never recorded a workspace write at all (the bug fixed alongside this
+    one, #1205's sibling), not because config.json was excluded by design.
+    Now that edit_file is tracked like write_file, the suffix filter is the
+    only thing left to prove here, so the fixture needs a genuinely
+    non-deliverable extension.
+    """
     storage = SessionStorage(":memory:")
     await storage.connect()
     manager = SessionManager(storage)
@@ -845,7 +954,7 @@ async def test_turn_runner_does_not_auto_publish_edited_config_json(tmp_path) ->
     await manager.create(session_key)
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    (workspace / "config.json").write_text("{\"enabled\": false}\n", encoding="utf-8")
+    (workspace / "config.yaml").write_text("enabled: false\n", encoding="utf-8")
     runner = TurnRunner(
         provider_selector=_ProviderSelector(_EditedConfigProvider()),
         tool_registry=_edit_file_registry(),
@@ -879,7 +988,7 @@ async def test_turn_runner_does_not_auto_publish_edited_config_json(tmp_path) ->
 
         transcript = await manager.get_transcript(session_key)
         assistant = [entry for entry in transcript if entry.role == "assistant"][-1]
-        assert assistant.content == "Updated config.json."
+        assert assistant.content == "Updated config.yaml."
     finally:
         await storage.close()
 
