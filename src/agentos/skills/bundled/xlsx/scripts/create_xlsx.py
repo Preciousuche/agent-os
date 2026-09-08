@@ -6,11 +6,15 @@ Spec:
         {
           "name": "Sales",
           "rows": [["A", "B"], [1, "=B1*2"]],
-          "merged": [{"range": "A1:B1"}],
+          "merged": ["A1:B1", {"range": "C1:D1"}],
           "freeze": "A2"
         }
       ]
     }
+
+Merged cell ranges may be specified as strings (e.g. "A1:B1") or as
+dictionaries with a "range" key (e.g. {"range": "A1:B1"}). Any other shape
+raises ValueError.
 """
 
 from __future__ import annotations
@@ -54,8 +58,20 @@ def build(spec: dict[str, Any]) -> Workbook:
             ws.append([_coerce(v) for v in row])
 
         for merged in sheet_spec.get("merged") or []:
-            if isinstance(merged, dict) and "range" in merged:
-                ws.merge_cells(str(merged["range"]))
+            if isinstance(merged, str) and merged.strip():
+                ws.merge_cells(merged.strip())
+            elif (
+                isinstance(merged, dict)
+                and "range" in merged
+                and isinstance(merged["range"], str)
+                and merged["range"].strip()
+            ):
+                ws.merge_cells(merged["range"].strip())
+            else:
+                raise ValueError(
+                    f"Invalid merged range specification: expected string (e.g. 'A1:B1') "
+                    f"or dict with 'range' key, got {merged!r}"
+                )
 
         freeze = sheet_spec.get("freeze")
         if isinstance(freeze, str) and freeze:

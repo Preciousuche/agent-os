@@ -134,12 +134,15 @@ Spec:
         ["NA", 1200000, "=B2/SUM($B$2:$B$4)"],
         ["EU", 850000, "=B3/SUM($B$2:$B$4)"]
       ],
-      "merged": [{"range": "A1:C1"}],
+      "merged": ["A1:C1"],
       "freeze": "A2"
     }
   ]
 }
 ```
+
+`merged` entries may be specified either as plain strings (e.g. `["A1:C1"]`)
+or as dictionaries with a `"range"` key (e.g. `[{"range": "A1:C1"}]`).
 
 For programmatic use:
 

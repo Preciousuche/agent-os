@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -148,3 +149,65 @@ def test_inspect_xlsx_creates_parent_directory(
     monkeypatch.setattr(sys, "argv", ["inspect_xlsx.py", str(src), "--out", str(out)])
     assert inspect_xlsx.main() == 0
     assert out.is_file()
+
+
+@pytest.mark.parametrize(
+    "merged_entries",
+    [
+        ["A1:B1", "C1:D1"],
+        [{"range": "A1:B1"}, {"range": "C1:D1"}],
+        ["A1:B1", {"range": "C1:D1"}],
+    ],
+)
+def test_create_xlsx_merged_shapes(merged_entries: list[Any]) -> None:
+    sys.path.insert(0, str(SCRIPTS))
+    try:
+        import create_xlsx  # type: ignore[import-not-found]
+    finally:
+        sys.path.pop(0)
+
+    spec = {
+        "sheets": [
+            {
+                "name": "Sheet1",
+                "rows": [["1", "2", "3", "4"]],
+                "merged": merged_entries,
+            }
+        ]
+    }
+    wb = create_xlsx.build(spec)
+    ranges = sorted(str(r) for r in wb.active.merged_cells.ranges)
+    assert ranges == ["A1:B1", "C1:D1"]
+
+
+@pytest.mark.parametrize(
+    "bad_entry",
+    [
+        42,
+        {"range": 123},
+        {"invalid": "A1:B1"},
+        "",
+        "   ",
+        [],
+        None,
+    ],
+)
+def test_create_xlsx_rejects_invalid_merged_shapes(bad_entry: Any) -> None:
+    sys.path.insert(0, str(SCRIPTS))
+    try:
+        import create_xlsx  # type: ignore[import-not-found]
+    finally:
+        sys.path.pop(0)
+
+    spec = {
+        "sheets": [
+            {
+                "name": "Sheet1",
+                "rows": [["1", "2"]],
+                "merged": [bad_entry],
+            }
+        ]
+    }
+    with pytest.raises(ValueError, match="Invalid merged range"):
+        create_xlsx.build(spec)
+
