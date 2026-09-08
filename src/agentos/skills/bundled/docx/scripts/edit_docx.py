@@ -4,9 +4,13 @@ Operations:
     {"op": "replace_run", "para": <int>, "run": <int>, "text": "..."}
     {"op": "replace_text", "find": "...", "with": "..."}
 
-`replace_text` walks every paragraph and concatenates run texts when the
-target string spans multiple runs, then writes the replacement back into the
-first run and clears the others — preserving the first run's style.
+`replace_text` walks every paragraph and concatenates run texts to find
+matches that may span multiple runs, but only ever touches the characters a
+match actually covers: the replacement lands in the run that owned the
+match's first character, and every other run — including the rest of a run a
+match only partly overlapped — keeps its own original text untouched. Runs
+are where OOXML character formatting (bold, italic, font, colour, ...)
+lives, so a run this leaves alone keeps its formatting exactly as it was.
 """
 
 from __future__ import annotations
@@ -27,15 +31,39 @@ def _replace_run(para: Paragraph, run_idx: int, text: str) -> None:
 
 
 def _replace_text_in_paragraph(para: Paragraph, find: str, replacement: str) -> bool:
-    if not para.runs:
+    if not para.runs or not find:
         return False
     full = "".join(run.text for run in para.runs)
     if find not in full:
         return False
-    new_full = full.replace(find, replacement)
-    para.runs[0].text = new_full
-    for run in para.runs[1:]:
-        run.text = ""
+
+    # Which run each character of `full` originally belongs to, so a
+    # character a match never touched can be written back into its own run
+    # (and keep that run's formatting) even when the match right before or
+    # after it spans multiple runs.
+    run_at: list[int] = []
+    for run_idx, run in enumerate(para.runs):
+        run_at.extend([run_idx] * len(run.text))
+
+    new_texts = ["" for _ in para.runs]
+    find_len = len(find)
+    pos = 0
+    while True:
+        match_start = full.find(find, pos)
+        if match_start == -1:
+            for i in range(pos, len(full)):
+                new_texts[run_at[i]] += full[i]
+            break
+        for i in range(pos, match_start):
+            new_texts[run_at[i]] += full[i]
+        # The whole replacement goes to the run owning the match's first
+        # character. Every other run the match spans loses only the matched
+        # characters -- it is not otherwise touched.
+        new_texts[run_at[match_start]] += replacement
+        pos = match_start + find_len
+
+    for run, text in zip(para.runs, new_texts, strict=True):
+        run.text = text
     return True
 
 
