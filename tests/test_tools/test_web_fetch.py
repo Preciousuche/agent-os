@@ -69,3 +69,31 @@ def test_resolve_effective_max_chars_allows_uncapped_run_policy() -> None:
         assert _resolve_effective_max_chars(999_999) == 999_999
     finally:
         current_tool_context.reset(token)
+
+
+def test_resolve_effective_max_chars_clamps_below_minimum_instead_of_disabling_cap() -> None:
+    """A request below the documented 100-char floor must be clamped up to
+    it, not treated as "no cap" -- the old behaviour returned None here,
+    which made _apply_max_chars skip truncation entirely (#1400)."""
+    assert _resolve_effective_max_chars(50) == 100
+
+
+def test_a_below_minimum_request_never_returns_more_than_a_higher_one() -> None:
+    """Pins the issue's exact inversion: requesting fewer characters must
+    never come back with more of them than a well-formed higher request."""
+    below_minimum = _resolve_effective_max_chars(50)
+    higher = _resolve_effective_max_chars(1000)
+    assert below_minimum is not None
+    assert higher is not None
+    assert below_minimum <= higher
+
+
+def test_resolve_effective_max_chars_run_budget_still_caps_a_clamped_request() -> None:
+    """Clamping a sub-100 request up to the floor must not let it escape a
+    run budget ceiling that sits below that floor."""
+    ctx = ToolContext(tool_run_budget_policy=ToolRunBudgetPolicy(max_single_fetch_chars=40))
+    token = current_tool_context.set(ctx)
+    try:
+        assert _resolve_effective_max_chars(10) == 40
+    finally:
+        current_tool_context.reset(token)

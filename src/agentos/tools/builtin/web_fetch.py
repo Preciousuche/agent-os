@@ -162,9 +162,13 @@ def _resolve_effective_max_chars(max_chars: int | None) -> int | None:
     """Resolve explicit max_chars or the default cap for omitted values."""
     max_allowed = _active_run_budget_policy().max_single_fetch_chars
     if max_chars is not None:
-        if max_chars < 100:
-            return None
-        return min(max_chars, max_allowed) if max_allowed is not None else max_chars
+        # A request below the documented 100-char floor must be clamped up
+        # to it, not treated as "no cap" -- returning None here disabled
+        # truncation entirely and let a sub-100 request bypass
+        # max_single_fetch_chars, so it returned *more* than a well-formed
+        # request for a higher max_chars (#1400).
+        clamped = max(max_chars, 100)
+        return min(clamped, max_allowed) if max_allowed is not None else clamped
     default = _resolve_default_max_chars()
     return min(default, max_allowed) if max_allowed is not None else default
 
