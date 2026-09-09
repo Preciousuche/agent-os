@@ -759,7 +759,7 @@ async def exec_command(
             status = approval_response.get("status")
             if status == "approval_denied":
                 await _record_shell_denial(
-                    "exec_command", command, workdir, DenialReason.HUMAN_REJECTED
+                    "exec_command", command, cwd, DenialReason.HUMAN_REJECTED
                 )
             return json.dumps(approval_response)
 
@@ -926,7 +926,7 @@ async def background_process(
             status = approval_response.get("status")
             if status == "approval_denied":
                 await _record_shell_denial(
-                    "background_process", command, workdir, DenialReason.HUMAN_REJECTED
+                    "background_process", command, cwd, DenialReason.HUMAN_REJECTED
                 )
             return json.dumps(approval_response)
 
@@ -1276,9 +1276,14 @@ async def process(
 
 
 def _sandbox_request_for(
-    tool_name: str, command: str, workdir: str | None
+    tool_name: str, command: str, cwd: str | None
 ) -> tuple[SandboxRequest, SandboxPolicy, str] | None:
     """Build a SandboxRequest for the current shell command.
+
+    ``cwd`` must already be resolved (e.g. via :func:`_effective_workdir`) —
+    a relative path here is silently dropped in favor of the workspace/cwd
+    fallback below, so a raw, unresolved ``workdir`` would let denials from
+    different relative directories collapse into the same fingerprint.
 
     Returns ``None`` when the sandbox runtime is not configured (tests that
     don't boot the gateway) so callers skip the §8.3/§8.5 hooks cleanly.
@@ -1289,8 +1294,8 @@ def _sandbox_request_for(
     action_kind = "shell.background" if tool_name == "background_process" else "shell.exec"
     ctx = current_tool_context.get()
     workspace = None
-    if workdir:
-        p = Path(workdir)
+    if cwd:
+        p = Path(cwd)
         if p.is_absolute():
             workspace = p
     if workspace is None and ctx is not None and ctx.workspace_dir:
@@ -1317,9 +1322,11 @@ def _sandbox_request_for(
 
 
 async def _record_shell_denial(
-    tool_name: str, command: str, workdir: str | None, reason: DenialReason
+    tool_name: str, command: str, cwd: str | None, reason: DenialReason
 ) -> None:
     """Record a shell-layer denial into the sandbox ledger for §8.3/§8.5.
+
+    ``cwd`` must already be resolved — see :func:`_sandbox_request_for`.
 
     Silently no-ops when the runtime is not configured. Failure to record
     is logged but never propagated — we prefer a missed bookkeeping entry
@@ -1328,7 +1335,7 @@ async def _record_shell_denial(
     runtime = get_runtime()
     if runtime is None:
         return
-    built = _sandbox_request_for(tool_name, command, workdir)
+    built = _sandbox_request_for(tool_name, command, cwd)
     if built is None:
         return
     request, _, session_id = built

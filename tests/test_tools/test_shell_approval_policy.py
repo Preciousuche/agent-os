@@ -8,8 +8,10 @@ import pytest
 
 from agentos.gateway.approval_queue import get_approval_queue, reset_approval_queue
 from agentos.sandbox.config import SandboxSettings
-from agentos.sandbox.integration import configure_runtime, reset_runtime
+from agentos.sandbox.governance import action_fingerprint
+from agentos.sandbox.integration import configure_runtime, get_runtime, reset_runtime
 from agentos.sandbox.intent_cache import get_intent_cache, reset_intent_cache
+from agentos.sandbox.types import DenialReason
 from agentos.tools.builtin import code_exec, filesystem, shell
 from agentos.tools.builtin.code_exec import execute_code
 from agentos.tools.builtin.shell_policy import PolicyResult
@@ -881,3 +883,83 @@ async def test_root_wipe_is_hard_blocked_at_the_exec_approval_boundary() -> None
         assert result["status"] == "blocked"
         assert result["reason"] == "sensitive_path"
         assert result["sensitive_path"] == "/"
+
+
+@pytest.mark.asyncio
+async def test_sandbox_request_for_resolves_relative_workdir_against_workspace(
+    tmp_path: Path,
+) -> None:
+    """Issue #1510: ``_sandbox_request_for`` only accepted ``workdir`` when it
+    was already absolute (``Path(workdir).is_absolute()``); a relative
+    ``workdir`` like ``"subproject"`` was silently dropped, so the built
+    request's ``cwd`` fell back to the workspace root instead of the actual
+    subdirectory a command ran in.
+
+    Callers must resolve first — this asserts the resolved contract holds:
+    handing ``_sandbox_request_for`` the output of ``_effective_workdir``
+    (as ``exec_command``/``background_process`` do) reaches the real
+    subdirectory, not the workspace fallback.
+    """
+    workspace = tmp_path / "workspace"
+    subproject = workspace / "subproject"
+    subproject.mkdir(parents=True)
+    ctx = current_tool_context.get()
+    assert ctx is not None
+    ctx.workspace_dir = str(workspace)
+    configure_runtime(
+        SandboxSettings(sandbox=False, security_grading=False, allow_legacy_mode=True),
+        workspace=workspace,
+    )
+
+    resolved_cwd = shell._effective_workdir("subproject")
+    built = shell._sandbox_request_for("exec_command", "rm -rf build", resolved_cwd)
+
+    assert built is not None
+    request, _, _ = built
+    assert Path(request.cwd) == subproject
+
+
+@pytest.mark.asyncio
+async def test_record_shell_denial_distinguishes_relative_workdirs(
+    tmp_path: Path,
+) -> None:
+    """Issue #1510: ``exec_command``/``background_process`` passed the raw,
+    unresolved ``workdir`` to ``_record_shell_denial`` instead of the
+    already-computed ``cwd = _effective_workdir(workdir)``. Since
+    ``action_fingerprint`` folds ``cwd`` into its hash, a denied ``rm -rf
+    build`` from ``subproject`` and the same command from ``other`` collapsed
+    into the same fingerprint -- corrupting the §8.3/§8.5 denial count this
+    ledger exists to track.
+    """
+    workspace = tmp_path / "workspace"
+    (workspace / "subproject").mkdir(parents=True)
+    (workspace / "other").mkdir(parents=True)
+    ctx = current_tool_context.get()
+    assert ctx is not None
+    ctx.workspace_dir = str(workspace)
+    session_id = str(ctx.session_key)
+    configure_runtime(
+        SandboxSettings(sandbox=False, security_grading=False, allow_legacy_mode=True),
+        workspace=workspace,
+    )
+    runtime = get_runtime()
+    assert runtime is not None
+
+    command = "rm -rf build"
+    cwd_a = shell._effective_workdir("subproject")
+    cwd_b = shell._effective_workdir("other")
+    assert cwd_a != cwd_b
+
+    await shell._record_shell_denial("exec_command", command, cwd_a, DenialReason.HUMAN_REJECTED)
+    await shell._record_shell_denial("exec_command", command, cwd_b, DenialReason.HUMAN_REJECTED)
+
+    built_a = shell._sandbox_request_for("exec_command", command, cwd_a)
+    built_b = shell._sandbox_request_for("exec_command", command, cwd_b)
+    assert built_a is not None and built_b is not None
+    fingerprint_a = action_fingerprint(built_a[0])
+    fingerprint_b = action_fingerprint(built_b[0])
+    assert fingerprint_a != fingerprint_b
+
+    assert await runtime.ledger.count(session_id, fingerprint_a) == 1
+    assert await runtime.ledger.count(session_id, fingerprint_b) == 1
+    assert await runtime.ledger.count_session(session_id) == 2
