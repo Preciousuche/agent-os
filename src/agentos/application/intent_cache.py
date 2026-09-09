@@ -183,6 +183,37 @@ def _rm_invocation_targets(tokens: list[str]) -> list[str]:
     return targets
 
 
+def _quoted_mask(command: str) -> list[bool]:
+    """Mark every index that falls inside a single- or double-quoted span.
+
+    Not a full shell parser — just enough to tell a command word from text
+    that merely contains one, e.g. the ``rm`` inside ``grep -rn "rm"
+    /etc/passwd`` is a grep pattern, not an invocation. A backslash right
+    before the current quote character escapes it inside double quotes
+    (matching ``shlex``/POSIX); single-quoted spans have no escape, same as
+    a real shell.
+    """
+    mask = [False] * len(command)
+    quote: str | None = None
+    i = 0
+    n = len(command)
+    while i < n:
+        ch = command[i]
+        if quote is not None:
+            mask[i] = True
+            if quote == '"' and ch == "\\" and i + 1 < n:
+                mask[i + 1] = True
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+        elif ch in ("'", '"'):
+            quote = ch
+            mask[i] = True
+        i += 1
+    return mask
+
+
 def _extract_rm_targets(command: str) -> list[tuple[str, frozenset[str]]]:
     """Pull every ``rm`` argument out, tagged with that invocation's flags.
 
@@ -192,12 +223,20 @@ def _extract_rm_targets(command: str) -> list[tuple[str, frozenset[str]]]:
     set, so the ``-rf`` on the second does not leak onto the first. Does not
     try to be a full shell parser — falls back to whitespace split on shlex
     errors (unbalanced quotes).
+
+    An ``rm`` occurrence is not anchored to the start of the command or to a
+    position right after a separator — ``sudo rm -rf X``, ``env FOO=1 rm -rf
+    X`` and ``time rm -rf X`` must all still match. Instead, a match is
+    skipped only when it falls inside a quoted span, so ``grep -rn "rm"
+    /etc/passwd`` or a commit message like ``git commit -m "rm the old
+    config"`` reads as text, not as a delete.
     """
     # Match each ``rm`` invocation, stopping at shell separators.
     # ``[^;\n&|]*`` captures everything from ``rm`` up to the next separator
     # or end-of-expression, so each ``rm`` is tokenized independently.
     pattern = re.compile(r"\brm\b([^;\n&|]*)")
-    matches = list(pattern.finditer(command))
+    quoted = _quoted_mask(command)
+    matches = [m for m in pattern.finditer(command) if not quoted[m.start()]]
     if not matches:
         return []
 

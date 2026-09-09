@@ -131,6 +131,36 @@ def test_every_rm_in_a_compound_command_is_checked() -> None:
     )
 
 
+def test_quoted_rm_word_does_not_hard_block_a_read_only_command() -> None:
+    """Issue #1349: a read-only command that merely mentions ``rm`` inside a
+    quoted argument must not be treated as a delete of a sensitive path.
+
+    ``_extract_intents`` (via ``_extract_rm_targets``) previously matched
+    ``\\brm\\b`` anywhere in the command, including inside quotes, so
+    ``grep -rn "rm" /etc/passwd`` registered a spurious delete intent on
+    ``/etc/passwd`` and was hard-blocked — a block only ``/elevated full``
+    can clear, so the operator could not approve their way past it.
+    """
+    for command in (
+        'grep -rn "rm" /etc/passwd',
+        'git commit -m "rm the old config" /etc/hosts',
+        'echo "use rm carefully" >> /root/notes.md',
+    ):
+        assert sensitive_target_in_command(command) is None, command
+
+
+def test_prefixed_rm_invocations_are_still_hard_blocked() -> None:
+    """Issue #1349 caveat: the fix must not anchor ``rm`` to a command
+    position, or ``sudo``/``env``/``time``-prefixed invocations would stop
+    being detected."""
+    for command in (
+        "sudo rm -rf /etc",
+        "env FOO=1 rm -rf /etc",
+        "time rm -rf /etc",
+    ):
+        assert sensitive_target_in_command(command) == "/etc", command
+
+
 def test_sensitive_reads_in_a_later_segment_are_blocked_at_the_tool_boundary() -> None:
     """Issue #676: the delete-intent scan only sees ``rm`` targets, so a
     non-destructive second segment (``cat /root/.bash_history``) is caught by

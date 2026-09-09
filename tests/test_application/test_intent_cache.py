@@ -50,6 +50,55 @@ class TestCompoundCommandSeparatorBypass:
         self._check_separator("\n")
 
 
+class TestQuotedRmWordIsNotAnInvocation:
+    """Regression tests for issue #1349.
+
+    ``_extract_rm_targets`` matched ``\\brm\\b`` anywhere in the command,
+    including inside a quoted argument, so a read-only command that merely
+    mentions the word ``rm`` in quotes registered a spurious delete intent.
+    Combined with ``sensitive_target_in_command`` (which calls through to
+    ``_extract_intents``), that false positive hard-blocked read-only
+    commands naming a sensitive path — a block only ``/elevated full``
+    could clear.
+
+    The fix must not anchor ``rm`` to a command position (start of string,
+    or right after a separator): prefixed invocations like ``sudo rm -rf``,
+    ``env FOO=1 rm -rf`` and ``time rm -rf`` have to stay detected. Only a
+    match that falls inside a quoted span is skipped.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            'grep -rn "rm" /etc/passwd',
+            'git commit -m "rm the old config" /etc/hosts',
+            'echo "use rm carefully" >> /root/notes.md',
+            "grep -rn 'rm' /etc/passwd",
+        ],
+    )
+    def test_quoted_rm_word_yields_no_delete_intent(self, command: str) -> None:
+        assert _extract_intents(command) == []
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "sudo rm -rf /etc",
+            "env FOO=1 rm -rf /etc",
+            "time rm -rf /etc",
+        ],
+    )
+    def test_prefixed_rm_invocation_still_detected(self, command: str) -> None:
+        kinds = {kind for kind, _ in _extract_intents(command)}
+        assert kinds == {"delete:recursive+force"}
+
+    def test_quoted_rm_word_does_not_suppress_a_real_rm_later_in_the_command(
+        self,
+    ) -> None:
+        command = 'echo "rm test" ; rm -rf /tmp/x'
+        kinds = {kind for kind, _ in _extract_intents(command)}
+        assert kinds == {"delete:recursive+force"}
+
+
 class TestMultiTargetApproval:
     """Multi-target commands must require approval for all targets."""
 
