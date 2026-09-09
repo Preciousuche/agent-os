@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Text-encoded tool calls are executed for every wrapper protocol
+  `engine.tool_text_compat` already hides from the user, not just
+  `<minimax:tool_call>`. `_synthesize_text_tool_events` gated all XML-style
+  extraction on the MiniMax-specific wrapper, so a model emitting the same
+  `<invoke>`/`<parameter>` markup inside `<tvoe_calls>`, DSML's
+  pipe-prefixed `<|DSML|tool_calls>` / `<｜DSML｜tool_calls>`, or no wrapper
+  at all had its tool call correctly scrubbed from the visible reply but
+  silently never executed — a write, or a spreadsheet, the user was told
+  had been created, that never was. Detection and extraction now key on
+  the `<invoke name="...">` tag itself, the one thing every variant shares,
+  instead of enumerating wrapper spellings. DSML's `string="true"/"false"`
+  attribute on `<parameter>` is also now honoured, decoding a
+  `string="false"` value as JSON (a list, dict, number, or bool) instead of
+  handing the tool an escaped JSON string where its schema expects the
+  real type
+  ([#1514](https://github.com/use-agent-os/agent-os/issues/1514)).
+
 ## [2026.9.10] - 2026-09-09
 
 ### Added

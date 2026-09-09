@@ -23,7 +23,6 @@ from agentos.secrets import clean_header_secret
 
 from .context_capabilities import supports_openrouter_explicit_prompt_cache
 from .error_body import read_bounded_body, summarize_error_body
-from .minimax_compat import contains_minimax_protocol, parse_minimax_tool_calls
 from .openrouter_attribution import openrouter_app_headers
 from .protocol import ProviderConnectionConfig, ProviderMetadata
 from .reasoning import ThinkTagStreamSplitter
@@ -31,6 +30,7 @@ from .request_proof import (
     ProviderRequestBudgetExceededError,
     prove_provider_payload_from_env,
 )
+from .text_tool_call_compat import contains_text_tool_call_protocol, parse_text_tool_calls
 from .types import (
     ChatConfig,
     DoneEvent,
@@ -425,23 +425,23 @@ def _synthesize_text_tool_events(
 
     events: list[ToolUseStartEvent | ToolUseEndEvent] = []
     allowed_tool_names = {tool.name for tool in tools}
-    if contains_minimax_protocol(full_text):
-        for minimax_call in parse_minimax_tool_calls(full_text):
-            if minimax_call.name not in allowed_tool_names:
+    if contains_text_tool_call_protocol(full_text):
+        for text_call in parse_text_tool_calls(full_text):
+            if text_call.name not in allowed_tool_names:
                 continue
-            tool_use_id = f"minimax_compat_{uuid4().hex[:12]}"
+            tool_use_id = f"text_tool_call_compat_{uuid4().hex[:12]}"
             events.append(
                 ToolUseStartEvent(
                     tool_use_id=tool_use_id,
-                    tool_name=minimax_call.name,
+                    tool_name=text_call.name,
                     synthetic_from_text=True,
                 )
             )
             events.append(
                 ToolUseEndEvent(
                     tool_use_id=tool_use_id,
-                    tool_name=minimax_call.name,
-                    arguments=dict(minimax_call.arguments),
+                    tool_name=text_call.name,
+                    arguments=dict(text_call.arguments),
                     synthetic_from_text=True,
                 )
             )
