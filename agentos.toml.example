@@ -97,7 +97,11 @@
 # cdp_port = 0                    # 0 = managed. >0 = attach to Chrome started with
 #                                 #   --remote-debugging-port=<port>. Localhost only.
 # attach_confirmed = false        # must be true to let the agent drive your Chrome
-# allowed_domains = []            # [] = open web (SSRF still blocks private IPs)
+# allowed_domains = []            # [] = open web (SSRF still blocks private IPs).
+#                                 #   Entries are hostnames, e.g. ["example.com"] — a
+#                                 #   bare hostname already covers its subdomains.
+#                                 #   ".example.com" / "*.example.com" mean the same
+#                                 #   thing; a scheme or trailing path is stripped.
 # persist_profile = false         # true = keep cookies/login between sessions (on disk)
 # session_ttl_minutes = 15
 # max_sessions = 3

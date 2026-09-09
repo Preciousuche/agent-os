@@ -32,6 +32,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import shutil
 import time
 from dataclasses import dataclass, field
@@ -69,6 +70,45 @@ _active_allowed_domains: tuple[str, ...] = ()
 _resolved_binary: str | None = None
 _binary_resolved: bool = False
 
+_HOSTNAME_RE = re.compile(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?")
+
+
+def normalize_allowed_domain(raw: str) -> str:
+    """Canonicalise one ``browser.allowed_domains`` entry to a bare hostname.
+
+    ``_domain_allowed`` (in :mod:`agentos.tools.builtin.browser`) already
+    treats a bare hostname as covering that domain *and* its subdomains
+    (``host == d or host.endswith("." + d)``), so every conventional "this
+    domain and its subdomains" spelling — a leading ``.`` or ``*.``, a
+    ``scheme://`` prefix, a trailing path — converges on that same bare form
+    rather than silently matching nothing. This does not add pattern
+    matching: it only strips the wrapping an operator would reasonably write
+    around the hostname the existing exact/suffix check already wants.
+
+    Mirrors ``normalize_tool_profile``: canonicalise, or raise naming the
+    accepted format.
+    """
+    entry = raw.strip().lower()
+    if "://" in entry:
+        from urllib.parse import urlparse
+
+        entry = urlparse(entry).netloc
+    entry = entry.split("/", 1)[0]
+    entry = entry.rsplit("@", 1)[-1]
+    entry = entry.split(":", 1)[0]
+    if entry.startswith("*."):
+        entry = entry[2:]
+    elif entry.startswith("."):
+        entry = entry[1:]
+    entry = entry.rstrip(".")
+    if not entry or not _HOSTNAME_RE.fullmatch(entry):
+        raise ValueError(
+            f"invalid browser.allowed_domains entry {raw!r}: expected a hostname such "
+            "as 'example.com', or '.example.com' / '*.example.com' for a domain and "
+            "its subdomains (subdomains are already included for a bare hostname)"
+        )
+    return entry
+
 
 def configure_browser(config: Any | None = None) -> None:
     """Apply a ``BrowserConfig``-shaped object to process-wide runtime state."""
@@ -96,7 +136,9 @@ def configure_browser(config: Any | None = None) -> None:
     )
     _active_max_sessions = max(1, int(_get("max_sessions", DEFAULT_MAX_SESSIONS)))
     domains = _get("allowed_domains", ()) or ()
-    _active_allowed_domains = tuple(str(d).strip().lower() for d in domains if str(d).strip())
+    _active_allowed_domains = tuple(
+        normalize_allowed_domain(str(d)) for d in domains if str(d).strip()
+    )
 
     # Binary path may have changed; drop the resolution cache.
     _resolved_binary = None

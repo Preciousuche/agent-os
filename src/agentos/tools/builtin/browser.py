@@ -104,7 +104,9 @@ def configure_browser(config: Any | None = None) -> None:
         return default if value is None else value
 
     domains = _get("allowed_domains", ()) or ()
-    _allowed_domains = tuple(str(d).strip().lower() for d in domains if str(d).strip())
+    _allowed_domains = tuple(
+        agent_browser.normalize_allowed_domain(str(d)) for d in domains if str(d).strip()
+    )
     _restrict_evaluate = bool(_get("restrict_evaluate", False))
     _allow_unsafe_evaluate = bool(_get("allow_unsafe_evaluate", False))
     _snapshot_max_chars = max(1000, int(_get("snapshot_max_chars", _DEFAULT_SNAPSHOT_MAX_CHARS)))

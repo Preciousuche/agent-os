@@ -192,6 +192,58 @@ class TestArgBuilding:
         agent_browser.configure_browser(_config(binary_path=""))
         assert "--session-name" not in _argv_for()
 
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            "example.com",
+            ".example.com",
+            "https://example.com",
+            "example.com/",
+            "*.example.com",
+        ],
+    )
+    def test_allowed_domains_entries_normalize_to_a_bare_hostname(self, entry: str) -> None:
+        """Issue #1478: every conventional spelling reaches the engine as the
+        same bare hostname, not the raw operator spelling."""
+        agent_browser.configure_browser(_config(binary_path="", allowed_domains=[entry]))
+        argv = _argv_for()
+        assert argv[argv.index("--allowed-domains") + 1] == "example.com"
+
+    def test_invalid_allowed_domains_entry_raises_naming_the_format(self) -> None:
+        with pytest.raises(ValueError, match="allowed_domains"):
+            agent_browser.configure_browser(_config(binary_path="", allowed_domains=["*bad*"]))
+
+
+class TestNormalizeAllowedDomain:
+    """Issue #1478: ``normalize_allowed_domain`` in isolation."""
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("example.com", "example.com"),
+            ("EXAMPLE.COM", "example.com"),
+            ("  example.com  ", "example.com"),
+            (".example.com", "example.com"),
+            ("*.example.com", "example.com"),
+            ("https://example.com", "example.com"),
+            ("http://example.com", "example.com"),
+            ("example.com/", "example.com"),
+            ("example.com/some/path", "example.com"),
+            ("https://example.com:8443/p", "example.com"),
+            ("example.com.", "example.com"),
+        ],
+    )
+    def test_normalizes_to_bare_hostname(self, raw: str, expected: str) -> None:
+        assert agent_browser.normalize_allowed_domain(raw) == expected
+
+    @pytest.mark.parametrize(
+        "raw",
+        ["not a host!", "*example.com", "exa*mple.com", "https://", "/", "*"],
+    )
+    def test_raises_naming_the_accepted_format(self, raw: str) -> None:
+        with pytest.raises(ValueError, match="allowed_domains"):
+            agent_browser.normalize_allowed_domain(raw)
+
 
 class TestEnvScrub:
     def test_scrubbed_env_excludes_agentos_and_provider_secrets(

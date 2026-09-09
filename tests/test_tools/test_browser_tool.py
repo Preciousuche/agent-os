@@ -216,6 +216,39 @@ class TestAllowlist:
         result = await _call(action="navigate", url="https://docs.example.com/x")
         assert result["success"] is True
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            "example.com",
+            ".example.com",
+            "https://example.com",
+            "example.com/",
+            "*.example.com",
+        ],
+    )
+    async def test_every_conventional_spelling_allows_the_domain_and_subdomains(
+        self, fake_binary: str, no_dns: None, entry: str
+    ) -> None:
+        """Issue #1478: every conventional spelling of "this domain and its
+        subdomains" must normalize to the same bare hostname, not match nothing."""
+        browser_mod.configure_browser(_config(fake_binary, allowed_domains=[entry]))
+        apex = await _call(action="navigate", url="https://example.com/p")
+        assert apex["success"] is True, entry
+        sub = await _call(action="navigate", url="https://www.example.com/p")
+        assert sub["success"] is True, entry
+
+    def test_invalid_allowed_domains_entry_raises_at_config_time(
+        self, fake_binary: str
+    ) -> None:
+        """Issue #1478: an entry that cannot be reduced to a hostname must fail
+        closed at configure_browser, naming the accepted format — not silently
+        match nothing at navigate time."""
+        with pytest.raises(ValueError, match="allowed_domains"):
+            browser_mod.configure_browser(
+                _config(fake_binary, allowed_domains=["not a host!"])
+            )
+
 
 class TestSecretGuard:
     @pytest.mark.asyncio
