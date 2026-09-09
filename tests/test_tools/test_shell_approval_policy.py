@@ -8,7 +8,7 @@ import pytest
 
 from agentos.gateway.approval_queue import get_approval_queue, reset_approval_queue
 from agentos.sandbox.config import SandboxSettings
-from agentos.sandbox.integration import configure_runtime, reset_runtime
+from agentos.sandbox.integration import configure_runtime, get_runtime, reset_runtime
 from agentos.sandbox.intent_cache import get_intent_cache, reset_intent_cache
 from agentos.tools.builtin import code_exec, filesystem, shell
 from agentos.tools.builtin.code_exec import execute_code
@@ -857,6 +857,130 @@ async def test_bypass_does_not_override_safe_bin_hard_denies() -> None:
 
     with pytest.raises(ToolError, match="command blocked by policy"):
         await shell.exec_command("Clear-Disk")
+
+
+@pytest.mark.asyncio
+async def test_denylist_hard_block_is_recorded_in_sandbox_ledger(tmp_path: Path) -> None:
+    """Issue #1513: a denylist hit raises ToolError immediately, never
+    reaching ``_record_shell_denial`` — so an agent repeatedly probing
+    denylisted binaries never tripped the §8.5 threshold this ledger exists
+    to enforce."""
+    configure_runtime(
+        SandboxSettings(sandbox=False, security_grading=False, allow_legacy_mode=True),
+        workspace=tmp_path,
+    )
+    runtime = get_runtime()
+    assert runtime is not None
+    ctx = current_tool_context.get()
+    assert ctx is not None
+    session_id = str(ctx.session_key)
+
+    assert await runtime.ledger.count_session(session_id) == 0
+    with pytest.raises(ToolError, match="command blocked by policy"):
+        await shell.exec_command("Clear-Disk")
+    assert await runtime.ledger.count_session(session_id) == 1
+
+
+@pytest.mark.asyncio
+async def test_denylist_hard_block_is_recorded_for_background_process(
+    tmp_path: Path,
+) -> None:
+    """Issue #1513: the same gap existed in ``background_process``."""
+    configure_runtime(
+        SandboxSettings(sandbox=False, security_grading=False, allow_legacy_mode=True),
+        workspace=tmp_path,
+    )
+    runtime = get_runtime()
+    assert runtime is not None
+    ctx = current_tool_context.get()
+    assert ctx is not None
+    session_id = str(ctx.session_key)
+
+    with pytest.raises(ToolError, match="command blocked by policy"):
+        await shell.background_process("Clear-Disk")
+    assert await runtime.ledger.count_session(session_id) == 1
+
+
+@pytest.mark.asyncio
+async def test_sensitive_path_hard_block_is_recorded_in_sandbox_ledger(
+    tmp_path: Path,
+) -> None:
+    """Issue #1513: ``_sensitive_shell_block`` returns early without ever
+    calling ``_record_shell_denial``."""
+    configure_runtime(
+        SandboxSettings(sandbox=False, security_grading=False, allow_legacy_mode=True),
+        workspace=tmp_path,
+    )
+    runtime = get_runtime()
+    assert runtime is not None
+    ctx = current_tool_context.get()
+    assert ctx is not None
+    session_id = str(ctx.session_key)
+
+    result = await shell.exec_command("cat ~/.ssh/id_rsa")
+    payload = json.loads(result)
+    assert payload["status"] == "blocked"
+    assert payload["reason"] == "sensitive_path"
+    assert await runtime.ledger.count_session(session_id) == 1
+
+
+@pytest.mark.asyncio
+async def test_workspace_lockdown_hard_block_is_recorded_in_sandbox_ledger(
+    tmp_path: Path,
+) -> None:
+    """Issue #1513: ``_workspace_lockdown_shell_block`` returns early without
+    ever calling ``_record_shell_denial``."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.txt"
+    ctx = current_tool_context.get()
+    assert ctx is not None
+    ctx.interaction_mode = InteractionMode.UNATTENDED
+    ctx.elevated = "bypass"
+    ctx.workspace_dir = str(workspace)
+    ctx.workspace_lockdown = True  # type: ignore[attr-defined]
+    session_id = str(ctx.session_key)
+    configure_runtime(
+        SandboxSettings(sandbox=False, security_grading=False, allow_legacy_mode=True),
+        workspace=workspace,
+    )
+    runtime = get_runtime()
+    assert runtime is not None
+
+    result = await shell.exec_command(f'echo ok > "{outside}"')
+    payload = json.loads(result)
+    assert payload["status"] == "blocked"
+    assert payload["reason"] == "workspace_lockdown"
+    assert await runtime.ledger.count_session(session_id) == 1
+
+
+@pytest.mark.asyncio
+async def test_workspace_write_deny_glob_hard_block_is_recorded_in_sandbox_ledger(
+    tmp_path: Path,
+) -> None:
+    """Issue #1513: ``_workspace_write_deny_shell_block`` returns early
+    without ever calling ``_record_shell_denial``."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ctx = current_tool_context.get()
+    assert ctx is not None
+    ctx.interaction_mode = InteractionMode.UNATTENDED
+    ctx.elevated = "bypass"
+    ctx.workspace_dir = str(workspace)
+    ctx.workspace_write_deny_globs = ["reports/*.txt"]  # type: ignore[attr-defined]
+    session_id = str(ctx.session_key)
+    configure_runtime(
+        SandboxSettings(sandbox=False, security_grading=False, allow_legacy_mode=True),
+        workspace=workspace,
+    )
+    runtime = get_runtime()
+    assert runtime is not None
+
+    result = await shell.exec_command("echo ok > reports/out.txt", workdir=str(workspace))
+    payload = json.loads(result)
+    assert payload["status"] == "blocked"
+    assert payload["reason"] == "workspace_write_deny"
+    assert await runtime.ledger.count_session(session_id) == 1
 
 
 @pytest.mark.asyncio

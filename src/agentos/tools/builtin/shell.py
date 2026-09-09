@@ -733,16 +733,20 @@ async def exec_command(
 
     # Denylist: hard-block, never bypassable
     if not result.allowed:
+        await _record_shell_denial("exec_command", command, cwd, DenialReason.POLICY_DENIED)
         raise ToolError(result.reason)
 
     sensitive_block = _sensitive_shell_block("exec_command", command, workdir=cwd)
     if sensitive_block is not None:
+        await _record_shell_denial("exec_command", command, cwd, DenialReason.POLICY_DENIED)
         return sensitive_block
     lockdown_block = _workspace_lockdown_shell_block("exec_command", command, cwd)
     if lockdown_block is not None:
+        await _record_shell_denial("exec_command", command, cwd, DenialReason.POLICY_DENIED)
         return json.dumps(lockdown_block, ensure_ascii=False)
     deny_block = _workspace_write_deny_shell_block("exec_command", command, cwd)
     if deny_block is not None:
+        await _record_shell_denial("exec_command", command, cwd, DenialReason.POLICY_DENIED)
         return json.dumps(deny_block, ensure_ascii=False)
 
     # Warnlist: two-step approval flow
@@ -895,15 +899,27 @@ async def background_process(
     result = check_safe_bin(command)
     cwd = _effective_workdir(workdir)
     if not result.allowed:
+        await _record_shell_denial(
+            "background_process", command, cwd, DenialReason.POLICY_DENIED
+        )
         raise ToolError(result.reason)
     sensitive_block = _sensitive_shell_block("background_process", command, workdir=cwd)
     if sensitive_block is not None:
+        await _record_shell_denial(
+            "background_process", command, cwd, DenialReason.POLICY_DENIED
+        )
         return sensitive_block
     lockdown_block = _workspace_lockdown_shell_block("background_process", command, cwd)
     if lockdown_block is not None:
+        await _record_shell_denial(
+            "background_process", command, cwd, DenialReason.POLICY_DENIED
+        )
         return json.dumps(lockdown_block, ensure_ascii=False)
     deny_block = _workspace_write_deny_shell_block("background_process", command, cwd)
     if deny_block is not None:
+        await _record_shell_denial(
+            "background_process", command, cwd, DenialReason.POLICY_DENIED
+        )
         return json.dumps(deny_block, ensure_ascii=False)
     if result.needs_approval:
         prior_elevation = _approval_elevation_state()
