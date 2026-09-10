@@ -2,12 +2,31 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from agentos.memory.atomic_write import atomic_write_text
 from agentos.paths import default_agentos_home
+
+#: One asyncio.Lock per resolved lockfile path, so concurrent installs that
+#: each do load -> mutate -> save race on the same in-memory lock instead of
+#: each racing the filesystem independently. Keyed by path (not a single
+#: global lock) so tests and multiple AGENTOS_HOME roots pointing at
+#: different lockfiles don't serialize against each other.
+_locks: dict[str, asyncio.Lock] = {}
+
+
+def _lock_for(path: Path) -> asyncio.Lock:
+    key = str(path.resolve())
+    lock = _locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _locks[key] = lock
+    return lock
 
 
 def default_lockfile_path() -> Path:
@@ -92,7 +111,37 @@ class Lockfile:
             "version": self.version,
             "installed": {name: asdict(entry) for name, entry in self.installed.items()},
         }
-        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        # A plain write_text truncates before writing the new content; a crash
+        # or full disk mid-write leaves a partial file that load() then reads
+        # as JSONDecodeError and silently treats as an empty lockfile. Writing
+        # to a temp file and renaming into place means a reader only ever
+        # sees the old content or the new content, never a truncated file.
+        atomic_write_text(path, json.dumps(data, indent=2))
+
+    @staticmethod
+    async def update(path: Path, mutate: Callable[[Lockfile], bool]) -> bool:
+        """Load, apply *mutate*, and save as one critical section.
+
+        ``load() -> mutate -> save()`` done separately races: two concurrent
+        callers each load before the other's save lands, and the later save
+        overwrites the file wholesale, silently dropping the earlier caller's
+        change. Locking only around ``save()`` does not close this — the
+        ``load()`` has to be inside the same critical section, or a caller can
+        still load stale data before another caller's save takes the lock.
+
+        *mutate* returns whether it changed the lockfile; that same value is
+        returned here so a caller like ``remove()`` (which is a no-op for a
+        name that was never installed) can tell whether anything happened
+        without also having to thread a mutable result out of the callback.
+        A ``False`` return leaves the file untouched rather than rewriting it
+        with no news.
+        """
+        async with _lock_for(path):
+            lf = Lockfile.load(path)
+            changed = mutate(lf)
+            if changed:
+                lf.save(path)
+            return changed
 
     def add(self, name: str, entry: LockEntry) -> None:
         self.installed[name] = entry

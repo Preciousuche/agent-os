@@ -217,36 +217,37 @@ class SkillInstaller:
 
         # 5. Update lockfile
         sha = compute_sha256(install_dir)
-        lockfile = Lockfile.load(self._lockfile_path)
-        lockfile.add(
-            name,
-            LockEntry(
-                source=source_id,
-                identifier=identifier,
-                # The field has existed since the lockfile did and was never
-                # written, so every install reported an empty version — now
-                # that `acquisition.version` is on the wire, that is visible.
-                version=bundle_meta.version if bundle_meta else "",
-                installed_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                path=str(install_dir),
-                sha256=sha,
-                license=bundle_meta.license if bundle_meta else "",
-                upstream_url=bundle_meta.homepage if bundle_meta else "",
-                publisher_id=_publisher_slug(bundle_meta, source_id),
-                # The row's author credit when it has one, else the brand it
-                # named. Both are untrusted free text and neither is resolved as
-                # identity — only ``publisher_id`` is (see
-                # ``agentos.skills.publishers``) — so recording the more
-                # specific of the two costs nothing and keeps the human who
-                # wrote a brand-distributed skill visible after install.
-                publisher_name=(bundle_meta.author or bundle_meta.provider) if bundle_meta else "",
-                source_trust=bundle_meta.trust_level if bundle_meta else "",
-                scan_verdict=scan_result.verdict,
-                scan_strategy=scan_result.strategy,
-                scan_findings=[asdict(finding) for finding in scan_result.findings],
-            ),
+        entry = LockEntry(
+            source=source_id,
+            identifier=identifier,
+            # The field has existed since the lockfile did and was never
+            # written, so every install reported an empty version — now
+            # that `acquisition.version` is on the wire, that is visible.
+            version=bundle_meta.version if bundle_meta else "",
+            installed_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            path=str(install_dir),
+            sha256=sha,
+            license=bundle_meta.license if bundle_meta else "",
+            upstream_url=bundle_meta.homepage if bundle_meta else "",
+            publisher_id=_publisher_slug(bundle_meta, source_id),
+            # The row's author credit when it has one, else the brand it
+            # named. Both are untrusted free text and neither is resolved as
+            # identity — only ``publisher_id`` is (see
+            # ``agentos.skills.publishers``) — so recording the more
+            # specific of the two costs nothing and keeps the human who
+            # wrote a brand-distributed skill visible after install.
+            publisher_name=(bundle_meta.author or bundle_meta.provider) if bundle_meta else "",
+            source_trust=bundle_meta.trust_level if bundle_meta else "",
+            scan_verdict=scan_result.verdict,
+            scan_strategy=scan_result.strategy,
+            scan_findings=[asdict(finding) for finding in scan_result.findings],
         )
-        lockfile.save(self._lockfile_path)
+
+        def _record(lf: Lockfile) -> bool:
+            lf.add(name, entry)
+            return True
+
+        await Lockfile.update(self._lockfile_path, _record)
 
         log.info("skill.installed", name=name, source=source_id, verdict=scan_result.verdict)
         return InstallResult(
@@ -263,7 +264,6 @@ class SkillInstaller:
         if not _SAFE_NAME_RE.match(name):
             return InstallResult(success=False, name=name, message=f"Invalid skill name: {name}")
 
-        lockfile = Lockfile.load(self._lockfile_path)
         # Remove from disk (only within managed dir)
         install_dir = (self._managed_dir / name).resolve()
         managed_root = self._managed_dir.resolve()
@@ -271,9 +271,7 @@ class SkillInstaller:
             shutil.rmtree(install_dir)
 
         # Remove from lockfile
-        removed = lockfile.remove(name)
-        if removed:
-            lockfile.save(self._lockfile_path)
+        removed = await Lockfile.update(self._lockfile_path, lambda lf: lf.remove(name))
 
         if not install_dir.exists() and not removed:
             return InstallResult(success=False, name=name, message=f"Skill '{name}' not found")
