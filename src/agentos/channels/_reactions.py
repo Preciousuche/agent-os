@@ -26,8 +26,19 @@ class _BaseStatusReactor:
         self._adapter = adapter; self._log = logger; self._disabled = False; self._active: dict[str, list[Any]] = defaultdict(list)
     async def received(self, message: IncomingMessage) -> None: await self._add_state(message, "received")
     async def running(self, message: IncomingMessage) -> None: await self._add_state(message, "running")
-    async def failed(self, message: IncomingMessage) -> None: await self._add_state(message, "failed")
+    async def failed(self, message: IncomingMessage) -> None:
+        # failed() is a terminal state with no completed() to follow (e.g. a
+        # message rejected before it ever runs) — clear the in-progress
+        # received/running tokens so the outcome emoji isn't left alongside
+        # them, then add the outcome and stop tracking it: it is meant to
+        # stay on the message, not be removed by a completed() that will
+        # never come.
+        await self._clear_active(message)
+        await self._add_state(message, "failed")
+        self._active.pop(self._message_key(message), None)
     async def completed(self, message: IncomingMessage) -> None:
+        await self._clear_active(message)
+    async def _clear_active(self, message: IncomingMessage) -> None:
         key = self._message_key(message)
         for token in self._active.pop(key, []):
             try:
