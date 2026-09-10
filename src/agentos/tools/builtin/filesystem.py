@@ -1033,7 +1033,14 @@ async def glob_search(pattern: str, path: str | None = None) -> str:
     params={
         "pattern": {"type": "string", "description": "Regex pattern to search for."},
         "path": {"type": "string", "description": "File or directory to search (default: cwd)."},
-        "include": {"type": "string", "description": "Glob pattern to filter files (e.g. '*.py')."},
+        "include": {
+            "type": "string",
+            "description": (
+                "Glob pattern to filter files, matched against the path relative "
+                "to `path` (e.g. '*.py', or path-qualified like 'tests/*.py' or "
+                "'src/**/*.ts')."
+            ),
+        },
         "max_results": {
             "type": "integer",
             "description": "Maximum number of matches to return (default 100).",
@@ -1095,8 +1102,16 @@ async def grep_search(
                     continue
                 if not fp.is_file():
                     continue
-                if include and not fnmatch.fnmatch(fp.name, include):
-                    continue
+                if include:
+                    # Matched against the path relative to `base`, not just
+                    # the bare filename: fnmatch's `*` already spans `/`
+                    # (fnmatch("src/a.py", "*.py") is True), so this keeps
+                    # every bare-filename pattern working while also making
+                    # path-qualified ones like "tests/*.py" or "src/**/*.ts"
+                    # match instead of silently matching nothing.
+                    relative = fp.relative_to(base).as_posix()
+                    if not fnmatch.fnmatch(relative, include):
+                        continue
                 search_file(fp)
 
         return results
