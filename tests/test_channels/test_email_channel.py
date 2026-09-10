@@ -534,23 +534,67 @@ async def test_send_resolves_the_recipient_from_metadata_recipient(
     assert sent[0].get("In-Reply-To") is None
 
 
-async def test_send_resolves_the_recipient_from_reply_to_address(
+async def test_send_refuses_a_bare_reply_to_even_when_it_looks_like_an_address(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Scheduler and heartbeat delivery pass the address as ``reply_to`` alone."""
+    """Issue #1570: ``reply_to`` names a *thread* (an inbound Message-ID),
+    never a mailbox by itself. A Message-ID has the same local@domain shape
+    as a real address, and its domain is chosen by whoever sent the original
+    mail — silently treating an unknown ``reply_to`` as an address (the old
+    behavior) meant a thread that aged out of the in-memory cache (LRU
+    eviction, or any process restart) redirected the reply to whatever
+    domain the original sender's Message-ID happened to carry.
+
+    A caller that actually knows the recipient (scheduler/heartbeat
+    delivery, the message tool) must say so explicitly via
+    ``metadata["to"]``/``["recipient"]``; there is no address-shaped
+    ``reply_to`` that is safe to trust on its own.
+    """
 
     channel = EmailChannel(config=_config())
     sent: list[EmailMessage] = []
     monkeypatch.setattr(channel, "_smtp_send", sent.append)
 
-    await channel.send(OutgoingMessage(content="alert", reply_to="alerts@example.com"))
+    with pytest.raises(ValueError, match="no recipient"):
+        await channel.send(
+            OutgoingMessage(content="alert", reply_to="attacker-chosen@evil.example")
+        )
 
-    assert sent[0]["To"] == "alerts@example.com"
-    assert sent[0].get_content().strip() == "alert"
+    assert sent == []
+
+
+async def test_send_does_not_leak_a_reply_to_an_attacker_domain_after_thread_eviction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #1570's exact reproduction: an inbound mail's Message-ID can
+    name any domain the sender likes. Once its thread ages out of the
+    in-memory cache (LRU eviction, or a process restart), a later reply must
+    not be silently redirected there."""
+
+    channel = EmailChannel(config=_config())
+    inbound = channel._to_incoming(
+        _raw(sender="owner@example.com", message_id="CAGr5Gg=xyz@attacker.example")
+    )
+    assert inbound is not None
+    assert inbound.channel_id == "CAGr5Gg=xyz@attacker.example"
+
+    # Simulate the thread aging out of the cache (LRU eviction or restart).
+    channel._threads.clear()
+
+    sent: list[EmailMessage] = []
+    monkeypatch.setattr(channel, "_smtp_send", sent.append)
+
+    with pytest.raises(ValueError, match="no recipient"):
+        await channel.send(
+            OutgoingMessage(content="Hello", reply_to="CAGr5Gg=xyz@attacker.example")
+        )
+
+    assert sent == []
 
 
 async def test_send_recipient_resolution_precedence(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``to`` beats ``recipient`` beats the thread cache beats ``reply_to``."""
+    """``to`` beats ``recipient`` beats the thread cache; an unknown
+    ``reply_to`` with neither has nowhere left to fall back to."""
 
     channel = EmailChannel(config=_config())
     assert channel._to_incoming(_raw()) is not None
@@ -572,14 +616,15 @@ async def test_send_recipient_resolution_precedence(monkeypatch: pytest.MonkeyPa
         )
     )
     await channel.send(OutgoingMessage(content="x", reply_to="m1@example.com"))
-    await channel.send(OutgoingMessage(content="x", reply_to="fourth@example.com"))
 
     assert [m["To"] for m in sent] == [
         "first@example.com",
         "second@example.com",
         "owner@example.com",
-        "fourth@example.com",
     ]
+
+    with pytest.raises(ValueError, match="no recipient"):
+        await channel.send(OutgoingMessage(content="x", reply_to="fourth@example.com"))
 
 
 @pytest.mark.parametrize(
