@@ -482,6 +482,15 @@ def sensitive_target_in_command(
 ) -> str | None:
     """Return the first sensitive marker for any destructive target, or None.
 
+    ``cwd`` and ``workspace`` answer two different questions and must not be
+    conflated: ``cwd`` is where a *relative* target in the command actually
+    resolves (the process's execution directory), while ``workspace`` is the
+    configured boundary that :func:`sensitive_path_marker` checks a target
+    against for the active-workspace exception (a workspace nested under a
+    broad sensitive prefix, e.g. ``/root/.agentos/workspace``, stays usable).
+    Falling back to one for the other lets a relative destructive target
+    resolve against the wrong base and silently miss a sensitive path.
+
     Multi-target commands (``rm /tmp/ok /etc/bad``) are each checked — the
     presence of a single sensitive path is enough to block the whole command.
     The filesystem root is sensitive here and only here: deleting ``/`` wipes
@@ -493,14 +502,12 @@ def sensitive_target_in_command(
         return None
     from agentos.sandbox.intent_cache import _extract_intents
 
-    effective_workspace = workspace
-    if effective_workspace is None:
-        effective_workspace = cwd if cwd is not None else Path.cwd()
+    resolve_base = cwd if cwd is not None else Path.cwd()
 
-    for _kind, target in _extract_intents(command, base_dir=effective_workspace):
+    for _kind, target in _extract_intents(command, base_dir=resolve_base):
         if _is_root_target(target):
             return _ROOT_TARGET_MARKER
-        marker = sensitive_path_marker(target, workspace=effective_workspace)
+        marker = sensitive_path_marker(target, workspace=workspace)
         if marker is not None:
             return marker
     return None

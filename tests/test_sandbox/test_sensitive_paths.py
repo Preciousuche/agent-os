@@ -81,6 +81,64 @@ def test_sensitive_command_targets_honor_active_workspace_exception() -> None:
     )
 
 
+def test_relative_target_resolves_against_cwd_not_workspace() -> None:
+    """Issue #1579's exact reproduction: when both workspace and cwd are
+    given, a relative destructive target must resolve against cwd (where
+    the command actually runs), not workspace. Discarding cwd let a
+    relative target under a sensitive cwd (~/.aws) silently resolve inside
+    an unrelated workspace instead, bypassing the hard block entirely."""
+    home = Path.home()
+
+    marker = sensitive_target_in_command(
+        "rm -rf config",
+        workspace=Path("/tmp/workspace"),
+        cwd=home / ".aws",
+    )
+
+    assert marker == "~/.aws"
+
+
+def test_relative_target_under_an_in_workspace_cwd_stays_allowed() -> None:
+    """The fix must not overcorrect: a relative target resolved against an
+    ordinary cwd that happens to be inside (or equal to) the workspace, and
+    that isn't itself sensitive, must still be allowed."""
+    workspace = Path("/tmp/workspace")
+
+    assert (
+        sensitive_target_in_command(
+            "rm -rf config",
+            workspace=workspace,
+            cwd=workspace / "subdir",
+        )
+        is None
+    )
+
+
+def test_workspace_exception_still_applies_with_cwd_correctly_separated() -> None:
+    """The active-workspace exception (a workspace nested under a broad
+    sensitive prefix like /root) must keep working once cwd and workspace
+    are resolved independently, for both a relative and an absolute target
+    run from inside that workspace."""
+    workspace = Path("/root/.agentos/workspace")
+
+    assert (
+        sensitive_target_in_command(
+            "rm scratch.txt",
+            workspace=workspace,
+            cwd=workspace,
+        )
+        is None
+    )
+    assert (
+        sensitive_target_in_command(
+            f"rm {workspace / 'scratch.txt'}",
+            workspace=workspace,
+            cwd=workspace,
+        )
+        is None
+    )
+
+
 def test_windows_rooted_workspace_targets_keep_leaf_secret_blocks() -> None:
     workspace = Path("/root/.agentos/workspace")
 
