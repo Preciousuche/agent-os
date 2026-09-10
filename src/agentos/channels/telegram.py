@@ -208,9 +208,6 @@ class TelegramChannel:
     _dedupe: EventDedupeCache = field(init=False, repr=False)
     _connected: bool = field(default=False, init=False, repr=False)
     _last_message_at: datetime | None = field(default=None, init=False, repr=False)
-    _known_sender_profiles: dict[str, dict[str, str]] = field(
-        default_factory=dict, init=False, repr=False
-    )
     bot_user_id: str | None = None
     bot_username: str | None = None
 
@@ -238,11 +235,6 @@ class TelegramChannel:
             "chat_id": str(message.channel_id or message.metadata.get("chat_id") or ""),
         }
 
-    def _remember_sender(self, message: IncomingMessage) -> None:
-        profile = self._sender_profile(message)
-        if profile["sender_id"]:
-            self._known_sender_profiles[profile["sender_id"]] = profile
-
     def record_access_denial(self, message: IncomingMessage, reason: str) -> None:
         """Create a durable pairing request for an unauthorized Telegram DM."""
         if reason != "not_paired" or bool(message.metadata.get("is_group")):
@@ -251,7 +243,6 @@ class TelegramChannel:
         sender_id = profile["sender_id"]
         if not sender_id:
             return
-        self._known_sender_profiles[sender_id] = profile
         try:
             result = self.pairing_store.request(
                 self.config.name,
@@ -705,7 +696,6 @@ class TelegramChannel:
         return payload
 
     def enqueue(self, message: IncomingMessage) -> None:
-        self._remember_sender(message)
         msg_id = str(message.metadata.get("message_id", ""))
         update_id = message.metadata.get("update_id")
         dedupe_key = f"{update_id}:{msg_id}" if update_id is not None else msg_id
