@@ -354,10 +354,17 @@ _TEE_PATTERN = re.compile(
 
 
 def _shell_write_targets(command: str) -> list[str]:
-    scanned = _FD_DUP_PATTERN.sub(" ", command)
+    # _without_shell_null_redirections strips ``> /dev/null``-shaped
+    # operators the same way _sensitive_shell_block already does before
+    # scanning, so a command that only ever discards output is not read as
+    # writing to a real path. It cannot reach ``| tee /dev/null`` — tee has
+    # no redirection operator for that regex to match — so /dev/null is also
+    # dropped explicitly below; it is never a meaningful write target either
+    # way, and workspace lockdown has no root that could ever contain it.
+    scanned = _FD_DUP_PATTERN.sub(" ", _without_shell_null_redirections(command))
     targets: list[str] = [match.group(2) for match in _REDIRECTION_PATTERN.finditer(scanned)]
     targets.extend(match.group(2) for match in _TEE_PATTERN.finditer(scanned))
-    return targets
+    return [target for target in targets if target != "/dev/null"]
 
 
 def _workspace_lockdown_shell_block(

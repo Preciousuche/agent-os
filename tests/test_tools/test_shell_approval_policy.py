@@ -457,6 +457,75 @@ async def test_workspace_lockdown_blocks_obvious_outside_shell_redirection(
     assert result["reason"] == "workspace_lockdown"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "command",
+    [
+        "pip install requests > /dev/null",
+        "pip install requests 2>/dev/null",
+        "pip install requests &>/dev/null",
+        "pip install requests > /dev/null 2>&1",
+        "pip install requests | tee /dev/null",
+    ],
+)
+async def test_workspace_lockdown_allows_devnull_redirection(
+    tmp_path: Path,
+    command: str,
+) -> None:
+    """Issue #1545: discarding output to /dev/null is one of the most common
+    shell idioms there is. Under workspace_lockdown it must never be treated
+    as a write outside the workspace."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ctx = current_tool_context.get()
+    assert ctx is not None
+    ctx.interaction_mode = InteractionMode.UNATTENDED
+    ctx.elevated = "bypass"
+    ctx.workspace_dir = str(workspace)
+    ctx.workspace_lockdown = True  # type: ignore[attr-defined]
+
+    result = await shell._check_exec_approval(
+        "exec_command",
+        command,
+        str(workspace),
+        "command requires approval",
+        None,
+        False,
+    )
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_workspace_lockdown_still_blocks_a_real_outside_target_next_to_devnull(
+    tmp_path: Path,
+) -> None:
+    """The /dev/null exemption must not weaken lockdown for a command that
+    also names a genuine out-of-workspace path in the same line."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.txt"
+    ctx = current_tool_context.get()
+    assert ctx is not None
+    ctx.interaction_mode = InteractionMode.UNATTENDED
+    ctx.elevated = "bypass"
+    ctx.workspace_dir = str(workspace)
+    ctx.workspace_lockdown = True  # type: ignore[attr-defined]
+
+    result = await shell._check_exec_approval(
+        "exec_command",
+        f"pip install requests > /dev/null 2>&1; echo ok > {outside}",
+        str(workspace),
+        "command requires approval",
+        None,
+        False,
+    )
+
+    assert result is not None
+    assert result["status"] == "blocked"
+    assert result["reason"] == "workspace_lockdown"
+
+
 @pytest.mark.parametrize(
     "command",
     [
@@ -522,6 +591,31 @@ def test_shell_write_targets_detects_tee_without_whitespace_or_short_options(
 )
 def test_shell_write_targets_ignores_words_ending_in_tee(command: str) -> None:
     assert shell._shell_write_targets(command) == []
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "pip install requests > /dev/null",
+        "pip install requests 2>/dev/null",
+        "pip install requests &>/dev/null",
+        "pip install requests > /dev/null 2>&1",
+        "pip install requests | tee /dev/null",
+    ],
+)
+def test_shell_write_targets_never_treats_dev_null_as_a_write_target(command: str) -> None:
+    """Issue #1545: _sensitive_shell_block already strips ``> /dev/null``
+    before scanning, via _without_shell_null_redirections; _shell_write_targets
+    did not, so it read the same benign idiom as a write to an out-of-workspace
+    path. Every conventional spelling of discarding output, including piping
+    through tee, must yield no write targets at all."""
+    assert shell._shell_write_targets(command) == []
+
+
+def test_shell_write_targets_still_detects_a_real_target_resembling_dev_null() -> None:
+    """The /dev/null exemption must be an exact match, not a prefix — a
+    genuine write to a similarly-named path is still a real write target."""
+    assert shell._shell_write_targets("echo p > /dev/nullish") == ["/dev/nullish"]
 
 
 @pytest.mark.asyncio
