@@ -1523,12 +1523,28 @@ async def _check_exec_approval(
                 )
                 _elevate_current_call.set(True)
                 return None
+            if not entry.resolved:
+                # The wait window elapsed with no human decision yet — this
+                # is not a denial. Recording one here would let a slow
+                # reviewer's eventual approval land on a queue entry the
+                # ledger already believes was rejected, and would falsely
+                # count as a repeat-intent denial (see post_denial_guard).
+                return {
+                    "status": "approval_pending",
+                    "approval_id": approval_id,
+                    "command": command,
+                    "warning": warning,
+                    "message": (
+                        "Approval is still pending after waiting "
+                        f"{int(_APPROVAL_RETRY_WAIT_SECONDS)}s. Ask the user to approve."
+                    ),
+                }
             return {
                 "status": "approval_denied",
                 "approval_id": approval_id,
                 "command": command,
                 "warning": warning,
-                "message": "Approval was denied or timed out.",
+                "message": "Approval was denied.",
             }
         status = "approval_required"
         message = (

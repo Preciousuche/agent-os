@@ -168,6 +168,16 @@ class ApprovalQueue:
         return entry
 
     async def wait(self, approval_id: str, timeout: float | None = None) -> bool:
+        """Wait up to *timeout* for *approval_id* to resolve.
+
+        Returns ``True``/``False`` once resolved, or ``False`` if *this call's*
+        wait window elapses first. A per-call timeout is not a decision — the
+        approval is still open for whoever eventually clicks approve/deny, so
+        it must not be persisted as a denial here. Doing that used to make a
+        slow-to-review approval permanently undeniable-or-approvable the
+        moment any one caller's wait timed out, even though nothing about the
+        approval itself was ever resolved.
+        """
         entry = self.get(approval_id)
         if entry.resolved:
             return entry.approved
@@ -176,7 +186,7 @@ class ApprovalQueue:
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                break
+                return False
             try:
                 await asyncio.wait_for(
                     entry._event.wait(),
@@ -187,31 +197,6 @@ class ApprovalQueue:
             entry = self.get(approval_id)
             if entry.resolved:
                 return entry.approved
-        return self._deny_on_timeout_if_unresolved(approval_id)
-
-    def _deny_on_timeout_if_unresolved(self, approval_id: str) -> bool:
-        self._conn.execute("BEGIN IMMEDIATE")
-        row = self._get_row(approval_id)
-        if row is None:
-            self._conn.rollback()
-            raise KeyError(f"Approval not found: {approval_id}")
-        entry = self._row_to_entry(row)
-        if entry.resolved:
-            self._conn.rollback()
-            self._pending[approval_id] = entry
-            entry._event.set()
-            return entry.approved
-        self._conn.execute(
-            "UPDATE approval_queue "
-            "SET resolved = 1, approved = 0 "
-            "WHERE approval_id = ? AND resolved = 0",
-            (approval_id,),
-        )
-        self._conn.commit()
-        entry = self.get(approval_id)
-        entry._event.set()
-        self._pending[approval_id] = entry
-        return entry.approved
 
     def resolve(
         self,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -8,7 +9,7 @@ import pytest
 
 from agentos.gateway.approval_queue import get_approval_queue, reset_approval_queue
 from agentos.sandbox.config import SandboxSettings
-from agentos.sandbox.integration import configure_runtime, reset_runtime
+from agentos.sandbox.integration import configure_runtime, get_runtime, reset_runtime
 from agentos.sandbox.intent_cache import get_intent_cache, reset_intent_cache
 from agentos.tools.builtin import code_exec, filesystem, shell
 from agentos.tools.builtin.code_exec import execute_code
@@ -881,3 +882,125 @@ async def test_root_wipe_is_hard_blocked_at_the_exec_approval_boundary() -> None
         assert result["status"] == "blocked"
         assert result["reason"] == "sensitive_path"
         assert result["sensitive_path"] == "/"
+
+
+@pytest.mark.asyncio
+async def test_inline_web_approval_timeout_returns_pending_not_denied(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #1563: an operator who simply takes longer than the inline wait
+    window to review a command must not be recorded as having rejected it.
+    The wait timing out is not a decision -- the approval is still open, so
+    the tool must return approval_pending (matching the retry branch's own
+    behavior for the same "still unresolved" case) instead of collapsing
+    "denied" and "timed out" into the same approval_denied status.
+    """
+    ctx = current_tool_context.get()
+    assert ctx is not None
+    ctx.caller_kind = CallerKind.WEB
+    session_id = str(ctx.session_key)
+    monkeypatch.setattr(shell, "_APPROVAL_RETRY_WAIT_SECONDS", 0.05)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: PolicyResult(
+            allowed=True, reason=f"command requires approval: {command}", needs_approval=True
+        ),
+    )
+    configure_runtime(
+        SandboxSettings(sandbox=False, security_grading=False, allow_legacy_mode=True),
+        workspace=tmp_path,
+    )
+    runtime = get_runtime()
+    assert runtime is not None
+
+    result_raw = await shell.exec_command("rm target.txt")
+    result = json.loads(result_raw)
+
+    assert result["status"] == "approval_pending"
+    assert "approval_id" in result
+    # The regression is what reaches the audit ledger, not just the returned
+    # status -- a false HUMAN_REJECTED here would let post_denial_guard treat
+    # the agent's honest retry as a repeat-intent denial.
+    assert await runtime.ledger.count_session(session_id) == 0
+
+
+@pytest.mark.asyncio
+async def test_inline_web_approval_still_reports_denied_once_actually_denied(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A real human denial (not a timeout) must still come back as
+    approval_denied and still be recorded."""
+    ctx = current_tool_context.get()
+    assert ctx is not None
+    ctx.caller_kind = CallerKind.WEB
+    session_id = str(ctx.session_key)
+    monkeypatch.setattr(shell, "_APPROVAL_RETRY_WAIT_SECONDS", 5.0)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: PolicyResult(
+            allowed=True, reason=f"command requires approval: {command}", needs_approval=True
+        ),
+    )
+    configure_runtime(
+        SandboxSettings(sandbox=False, security_grading=False, allow_legacy_mode=True),
+        workspace=tmp_path,
+    )
+    runtime = get_runtime()
+    assert runtime is not None
+
+    async def _deny_shortly_after_request() -> None:
+        for _ in range(200):
+            pending = get_approval_queue().list_pending("exec")
+            if pending:
+                get_approval_queue().resolve(pending[0]["id"], False)
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError("approval never appeared in the queue")
+
+    denier = asyncio.create_task(_deny_shortly_after_request())
+    result_raw = await shell.exec_command("rm target.txt")
+    await denier
+    result = json.loads(result_raw)
+
+    assert result["status"] == "approval_denied"
+    assert await runtime.ledger.count_session(session_id) == 1
+
+
+@pytest.mark.asyncio
+async def test_inline_timeout_leaves_the_approval_resolvable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #1568's other half, at the shell tool boundary: the approval_id
+    returned from a timed-out inline wait must still be genuinely
+    resolvable -- a human clicking Approve after the agent's wait window
+    elapsed must not find the queue entry already closed out as denied."""
+    ctx = current_tool_context.get()
+    assert ctx is not None
+    ctx.caller_kind = CallerKind.WEB
+    monkeypatch.setattr(shell, "_APPROVAL_RETRY_WAIT_SECONDS", 0.05)
+    monkeypatch.setattr(
+        shell,
+        "check_safe_bin",
+        lambda command: PolicyResult(
+            allowed=True, reason=f"command requires approval: {command}", needs_approval=True
+        ),
+    )
+    configure_runtime(
+        SandboxSettings(sandbox=False, security_grading=False, allow_legacy_mode=True),
+        workspace=tmp_path,
+    )
+
+    pending_raw = await shell.exec_command("rm target.txt")
+    pending = json.loads(pending_raw)
+    assert pending["status"] == "approval_pending"
+
+    get_approval_queue().resolve(pending["approval_id"], True)
+
+    entry = get_approval_queue().get(pending["approval_id"])
+    assert entry.resolved is True
+    assert entry.approved is True

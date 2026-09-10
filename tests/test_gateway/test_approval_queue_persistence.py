@@ -94,15 +94,41 @@ async def test_approval_queue_wait_same_process_event_fast_path(tmp_path) -> Non
 
 
 @pytest.mark.asyncio
-async def test_approval_queue_wait_preserves_timeout_denies(tmp_path) -> None:
+async def test_approval_queue_wait_timeout_leaves_the_approval_open(tmp_path) -> None:
+    """Issue #1568: a per-call wait() timeout is not a human decision. It
+    used to permanently mark the entry resolved/denied in SQLite the moment
+    any one caller's wait window elapsed, so a reviewer who took longer than
+    that window to click Approve could never actually approve it -- the row
+    was already closed out as denied. A timeout must leave the approval
+    exactly as open as it was before the call."""
     db_path = tmp_path / "approval_queue.sqlite"
     queue = ApprovalQueue(db_path=str(db_path), default_timeout=1.0, poll_interval=0.01)
     approval_id = queue.request("exec", {"toolName": "exec_command", "command": "rm x"})
     try:
         assert await queue.wait(approval_id, timeout=0.02) is False
         entry = queue.get(approval_id)
-        assert entry.resolved is True
+        assert entry.resolved is False
         assert entry.approved is False
+        assert [row["id"] for row in queue.list_pending("exec")] == [approval_id]
+    finally:
+        queue.close()
+
+
+@pytest.mark.asyncio
+async def test_approval_queue_stays_approvable_after_a_wait_timeout(tmp_path) -> None:
+    """The reviewer's eventual decision, made after some caller's wait()
+    already timed out once, must still land."""
+    db_path = tmp_path / "approval_queue.sqlite"
+    queue = ApprovalQueue(db_path=str(db_path), default_timeout=1.0, poll_interval=0.01)
+    approval_id = queue.request("exec", {"toolName": "exec_command", "command": "rm x"})
+    try:
+        assert await queue.wait(approval_id, timeout=0.02) is False
+
+        queue.resolve(approval_id, True)
+
+        entry = queue.get(approval_id)
+        assert entry.resolved is True
+        assert entry.approved is True
     finally:
         queue.close()
 
