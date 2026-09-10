@@ -648,6 +648,94 @@ class JobStore:
         """Insert/update a job without committing — use inside transaction()."""
         await self._execute_save(job)
 
+    async def _execute_save_preserving_reservation(self, job: CronJob) -> None:
+        handler_key, payload, session_target, session_key = normalize_contract(
+            handler_key=job.handler_key,
+            payload=job.payload,
+            session_target=job.session_target,
+            session_key=job.session_key,
+            origin_session_key=job.origin_session_key,
+            strict=False,
+        )
+        origin_session_key = normalize_origin_session_key(
+            session_target,
+            job.origin_session_key,
+        )
+        await self._db().execute(
+            """
+            UPDATE scheduler_jobs
+            SET name=?, cron_expr=?, handler_key=?, payload=?, status=?,
+                updated_at=?, last_run_at=?, next_run_at=?,
+                run_count=?, error_count=?, last_error=?, max_retries=?, jitter_seconds=?,
+                schedule_kind=?, schedule_raw=?, session_target=?, session_key=?,
+                timeout_seconds=?, wake_mode=?, delete_after_run=?, enabled=?, backoff_until=?,
+                consecutive_errors=?, delivery_json=?, origin_session_key=?,
+                scheduled_run_at=?, tool_policy_json=?, tz=?, anchor_at=?,
+                creator_session_key=?, creator_sender_id=?
+            WHERE id = ?
+            """,
+            (
+                job.name,
+                job.cron_expr,
+                handler_key,
+                json.dumps(payload),
+                job.status.value,
+                job.updated_at.isoformat(),
+                self._iso(job.last_run_at),
+                self._iso(job.next_run_at),
+                job.run_count,
+                job.error_count,
+                job.last_error,
+                job.max_retries,
+                job.jitter_seconds,
+                getattr(job.schedule_kind, "value", str(job.schedule_kind)),
+                job.schedule_raw,
+                getattr(session_target, "value", str(session_target)),
+                session_key,
+                job.timeout_seconds,
+                getattr(job.wake_mode, "value", str(job.wake_mode)),
+                1 if job.delete_after_run else 0,
+                1 if job.enabled else 0,
+                self._iso(job.backoff_until),
+                job.consecutive_errors,
+                _serialize_delivery(job.delivery),
+                origin_session_key,
+                self._iso(job.scheduled_run_at),
+                json.dumps(job.tool_policy or {}),
+                job.tz or "",
+                self._iso(job.anchor_at),
+                job.creator_session_key or "",
+                job.creator_sender_id or "",
+                job.id,
+            ),
+        )
+
+    async def save_preserving_reservation(self, job: CronJob) -> None:
+        """Persist every column except the reservation quartet.
+
+        ``reservation_token``, ``reserved_at``, ``reserved_by`` and
+        ``reservation_source`` are owned by the reservation protocol
+        (``reserve_due_job``, ``release_reservation``,
+        ``finalize_reserved_missing_handler``) — not by callers that only
+        mean to flip a status or edit a schedule. Those callers do
+        ``get() -> mutate a field or two -> save(job)`` with no lock spanning
+        the read+write pair; a concurrent ``reserve_due_job`` landing in that
+        gap claims the row with its own atomic ``UPDATE``, and a subsequent
+        full-column ``save()`` here would silently overwrite that claim back
+        to the pre-reservation snapshot the caller's ``get()`` captured.
+        That both drops the eventual execution result (``apply_reserved_result``
+        sees a reservation_token it doesn't recognize and returns ``False``)
+        and un-reserves the row for a second, concurrent run of the same job.
+
+        Used by :meth:`SchedulerOps.update`, ``.pause`` and ``.resume``.
+        Anything that legitimately changes the reservation columns goes
+        through :meth:`save` directly, never through this one.
+        """
+        async with self._write_lock:
+            await self._execute_save_preserving_reservation(job)
+            if not self._in_transaction:
+                await self._db().commit()
+
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[JobStore]:
         """Batch multiple save_no_commit() calls into a single commit with rollback on failure."""
