@@ -203,6 +203,7 @@ def build_policy(
     settings: SandboxSettings,
     *,
     trusted: bool = True,
+    hints: LevelHints | None = None,
 ) -> SandboxPolicy:
     """Materialise a :class:`SandboxPolicy` for ``level``.
 
@@ -211,6 +212,13 @@ def build_policy(
     does not alter the level here — callers are expected to have passed the
     flag through :func:`select_level` already — but it does force approval on
     for any untrusted action.
+
+    ``hints`` is the same object (if any) already passed to
+    :func:`select_level`. A trusted-source action can still reach ``STRICT``
+    on ``writes_outside_workspace``/``crosses_trust_boundary`` alone; that
+    escalation is exactly the boundary-crossing risk ``STRICT`` exists to
+    gate, independent of whether the request's source was trusted, so it
+    also forces approval on.
 
     ``workspace`` must be an absolute path. If the caller is unsure, resolve
     it first; we do not call :meth:`Path.resolve` here to avoid surprising
@@ -224,8 +232,11 @@ def build_policy(
     network = _resolve_network(level, action_kind)
     tmp_writable = level != SecurityLevel.LOCKED
 
+    crosses_boundary = hints is not None and (
+        hints.writes_outside_workspace or hints.crosses_trust_boundary
+    )
     require_approval = level >= SecurityLevel.STRICT and (
-        level == SecurityLevel.LOCKED or not trusted
+        level == SecurityLevel.LOCKED or not trusted or crosses_boundary
     )
 
     return SandboxPolicy(

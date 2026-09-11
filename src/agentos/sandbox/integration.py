@@ -371,6 +371,7 @@ async def gate_action(
         workspace,
         rt.settings,
         trusted=(hints is None or hints.trusted_source),
+        hints=hints,
     )
     request = build_request(
         action_kind=action_kind,
