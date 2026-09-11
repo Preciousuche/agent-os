@@ -202,6 +202,27 @@ def test_abandoned_probe_does_not_wedge_the_breaker() -> None:
     assert breaker.allow("openrouter") is True
 
 
+def test_request_shaped_failure_during_probe_releases_the_slot() -> None:
+    """Regression for #1602: a non-tripping failure during the half-open probe
+    must not extend the outage. The probe itself failed for a reason that has
+    nothing to do with provider health, so an unrelated request right after it
+    must still be admitted -- not blocked for a full cooldown window."""
+    clock = FakeClock()
+    breaker = _breaker(clock, threshold=1, cooldown=60.0)
+    _fail(breaker, "openrouter", 1)
+
+    clock.advance(60.0)
+    assert breaker.allow("openrouter") is True  # probe admitted
+    assert breaker.state("openrouter") is BreakerState.HALF_OPEN
+
+    breaker.record_failure("openrouter", ProviderFailureKind.MODEL_NOT_FOUND, "bad model id")
+
+    # No cooldown advance: the slot must be free immediately, not after 60s.
+    assert breaker.allow("openrouter") is True
+    # Still half-open -- the request-shaped failure proved nothing either way.
+    assert breaker.state("openrouter") is BreakerState.HALF_OPEN
+
+
 def test_disabled_breaker_always_admits() -> None:
     clock = FakeClock()
     breaker = _breaker(clock, threshold=1, enabled=False)

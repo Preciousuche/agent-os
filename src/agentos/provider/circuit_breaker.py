@@ -250,7 +250,16 @@ class ProviderCircuitBreaker:
         if kind is not None and not trips_breaker(kind):
             with self._lock:
                 entry = self._entries.get(provider)
-                return entry.state if entry else BreakerState.CLOSED
+                if entry is None:
+                    return BreakerState.CLOSED
+                if entry.state is BreakerState.HALF_OPEN:
+                    # The probe itself failed for a request-shaped reason --
+                    # that proves nothing about provider health. Release the
+                    # slot so it doesn't sit "occupied" by a failure that will
+                    # never resolve it, blocking every other caller for a full
+                    # cooldown window over nothing.
+                    entry.probe_started_at = None
+                return entry.state
         with self._lock:
             entry = self._entries.setdefault(provider, _Entry())
             now = self._clock()
