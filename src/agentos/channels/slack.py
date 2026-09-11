@@ -13,7 +13,7 @@ from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 import structlog
@@ -40,6 +40,9 @@ from agentos.channels.contract import (
 from agentos.channels.types import ChannelHealth, IncomingMessage, OutgoingMessage
 from agentos.engine.native_commands import slack_command_manifest
 from agentos.env import trust_env as _trust_env
+
+if TYPE_CHECKING:
+    from agentos.gateway.config import SlackChannelEntry
 
 log = structlog.get_logger(__name__)
 
@@ -1044,3 +1047,31 @@ class SlackChannel:
             bot_user_id=self.bot_user_id,
             last_message_at=self._last_message_at,
         )
+
+
+def build_channel_from_entry(entry: SlackChannelEntry) -> SlackChannel:
+    """Build a ``SlackChannel`` from its gateway entry.
+
+    The registry's generic builder only special-cases a field literally named
+    ``name`` (see ``DiscordChannelConfig.name``, ``TelegramChannelConfig.name``);
+    Slack's adapter identity field is ``channel_id`` instead, so it needs this
+    explicit builder to carry ``entry.name`` across. Without it ``channel_id``
+    keeps its dataclass default of ``"slack"`` regardless of the entry's
+    configured name, and the approval sessionKey mismatch check in
+    ``_handle_slack_interactive`` (which compares against ``self.channel_id``)
+    can never match for a non-default-named entry.
+    """
+    return SlackChannel(
+        token=entry.token,
+        slack_channel_id=entry.slack_channel_id,
+        channel_id=entry.name,
+        signing_secret=entry.signing_secret,
+        webhook_path=entry.webhook_path,
+        reply_in_thread=entry.reply_in_thread,
+        connection_mode=entry.connection_mode,
+        app_token=entry.app_token,
+        app_id=entry.app_id,
+        manifest_token=entry.manifest_token,
+        command_request_url=entry.command_request_url,
+        status_reactions_enabled=entry.status_reactions_enabled,
+    )

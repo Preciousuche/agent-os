@@ -10,6 +10,7 @@ from starlette.requests import Request
 
 from agentos.channel_pairing import ChannelAdmission
 from agentos.channels.discord import DiscordChannel, DiscordChannelConfig
+from agentos.channels.registry import build_managed_channel
 from agentos.channels.slack import SlackChannel
 from agentos.channels.telegram import TelegramChannel, TelegramChannelConfig
 from agentos.channels.types import IncomingMessage, OutgoingMessage
@@ -19,6 +20,7 @@ from agentos.gateway.channel_dispatch import (
     _run_turn_batch_path,
     _send_channel_approval_prompt,
 )
+from agentos.gateway.config import SlackChannelEntry
 
 
 @pytest.fixture(autouse=True)
@@ -219,6 +221,81 @@ async def test_slack_interactive_payload_handling() -> None:
     msg = await channel.receive()
     assert msg.content == "Approve"
     assert msg.sender_id == "U12345"
+
+
+def test_slack_channel_built_from_entry_reflects_entry_name() -> None:
+    """Regression for #1606: ``build_managed_channel`` must carry the entry's
+    configured name into ``channel.channel_id``, the field the approval
+    sessionKey mismatch check reads -- the same way DiscordChannelConfig.name
+    and TelegramChannelConfig.name reflect their entry's name."""
+    entry = SlackChannelEntry(name="slack-support", token="xoxb-test", slack_channel_id="C12345")
+
+    channel = build_managed_channel(entry)
+
+    assert channel.channel_id == "slack-support"
+
+
+@pytest.mark.asyncio
+async def test_slack_interactive_payload_resolves_for_non_default_entry_name() -> None:
+    """Regression for #1606: a Slack entry with a name other than "slack" used
+    to have its approvals stuck forever, since channel.channel_id stayed
+    hardcoded to "slack" and never matched the sessionKey's channel segment
+    (which correctly carries the entry name)."""
+    entry = SlackChannelEntry(name="slack-support", token="xoxb-test", slack_channel_id="C12345")
+    channel = build_managed_channel(entry)
+    assert isinstance(channel, SlackChannel)
+
+    queue = get_approval_queue()
+    approval_id = queue.request(
+        "exec",
+        {
+            "argv": ["rm", "-rf"],
+            "action_kind": "exec",
+            "sessionKey": "agent:main:slack-support:channel:C12345",
+        },
+    )
+
+    channel.parse_event = lambda ev: IncomingMessage(
+        sender_id=ev["user"],
+        channel_id=ev["channel"],
+        content=ev["text"],
+    )
+
+    payload = {
+        "type": "block_actions",
+        "user": {"id": "U12345"},
+        "channel": {"id": "C12345"},
+        "response_url": "https://hooks.slack.com/actions/test",
+        "message": {
+            "text": "Approve this execution?",
+            "blocks": [
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": "Approve this execution?"},
+                },
+                {
+                    "type": "actions",
+                    "block_id": "approval_actions",
+                    "elements": [{"type": "button", "value": f"approve:{approval_id}"}],
+                },
+            ],
+        },
+        "actions": [{"value": f"approve:{approval_id}"}],
+    }
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+    async def fake_post(url, json=None, **kwargs):
+        return FakeResponse()
+
+    with patch("httpx.AsyncClient.post", side_effect=fake_post):
+        await channel._handle_slack_interactive(payload)
+
+    entry_after = queue.get(approval_id)
+    assert entry_after.resolved is True
+    assert entry_after.approved is True
 
 
 @pytest.mark.asyncio
