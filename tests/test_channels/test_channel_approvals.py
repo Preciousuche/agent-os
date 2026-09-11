@@ -405,6 +405,97 @@ async def test_discord_component_interaction_handling() -> None:
     assert msg.sender_id == "usr123"
 
 
+@pytest.mark.asyncio
+async def test_discord_component_interaction_resolves_for_non_default_entry_name() -> None:
+    """Regression for #1600: the sessionKey channel segment carries the entry's
+    configured name (e.g. "discord-support" for a multi-account setup), but the
+    handler used to compare it against the hardcoded literal "discord" -- which
+    never matches for any entry that isn't the default-named one, so the
+    approval could never resolve."""
+    queue = get_approval_queue()
+    approval_id = queue.request(
+        "exec",
+        {
+            "argv": ["rm", "-rf"],
+            "action_kind": "exec",
+            "sessionKey": "agent:main:discord-support:direct:usr123",
+        },
+    )
+
+    channel = DiscordChannel(DiscordChannelConfig(token="test-token", name="discord-support"))
+
+    async def fake_post(path, json=None, headers=None, **kwargs):
+        class FakeResp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"id": "999"}
+
+        return FakeResp()
+
+    channel._get_client = lambda: AsyncMock(post=fake_post)
+
+    data = {
+        "type": 3,
+        "id": "int123",
+        "token": "token123",
+        "channel_id": "chan123",
+        "user": {"id": "usr123"},
+        "message": {"content": "Approval requested"},
+        "data": {"custom_id": f"approve:{approval_id}"},
+    }
+
+    await channel._handle_discord_component_interaction(data)
+
+    entry = queue.get(approval_id)
+    assert entry.resolved is True
+    assert entry.approved is True
+
+
+@pytest.mark.asyncio
+async def test_discord_component_interaction_rejects_mismatched_entry_name() -> None:
+    """A sessionKey minted for a different Discord entry must still be rejected."""
+    queue = get_approval_queue()
+    approval_id = queue.request(
+        "exec",
+        {
+            "argv": ["rm", "-rf"],
+            "action_kind": "exec",
+            "sessionKey": "agent:main:discord-other:direct:usr123",
+        },
+    )
+
+    channel = DiscordChannel(DiscordChannelConfig(token="test-token", name="discord-support"))
+
+    async def fake_post(path, json=None, headers=None, **kwargs):
+        class FakeResp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"id": "999"}
+
+        return FakeResp()
+
+    channel._get_client = lambda: AsyncMock(post=fake_post)
+
+    data = {
+        "type": 3,
+        "id": "int123",
+        "token": "token123",
+        "channel_id": "chan123",
+        "user": {"id": "usr123"},
+        "message": {"content": "Approval requested"},
+        "data": {"custom_id": f"approve:{approval_id}"},
+    }
+
+    await channel._handle_discord_component_interaction(data)
+
+    entry = queue.get(approval_id)
+    assert entry.resolved is False
+
+
 _PENDING_APPROVAL: dict[str, Any] = {
     "approval_id": "app-123",
     "command": "ls -l",
