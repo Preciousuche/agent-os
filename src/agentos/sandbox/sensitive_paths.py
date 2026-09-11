@@ -259,12 +259,7 @@ def is_sensitive_path(path: str) -> str | None:
         return None
     candidates = _comparison_path_candidates(path)
     for expanded in candidates:
-        if (
-            expanded == "/root/.ssh"
-            or expanded.startswith("/root/.ssh/")
-            or expanded.endswith("/root/.ssh")
-            or "/root/.ssh/" in expanded
-        ):
+        if _path_contains(expanded, "/root/.ssh"):
             return "~/.ssh"
     for prefix in _SENSITIVE_PREFIXES:
         for expanded in candidates:

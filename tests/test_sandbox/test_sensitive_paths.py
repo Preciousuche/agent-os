@@ -110,6 +110,19 @@ def test_posix_sensitive_paths_stay_blocked_on_windows_runners() -> None:
     )
 
 
+def test_root_ssh_check_does_not_match_an_unrelated_path_containing_the_substring() -> None:
+    """Regression for #1794: the ``/root/.ssh`` special case used unanchored
+    ``endswith``/``in`` string checks, so a workspace path that merely
+    *contains* the literal substring "root/.ssh" -- with nothing to do with
+    the real /root home directory -- was incorrectly flagged."""
+    assert is_sensitive_path("/home/dev/myproject/backup-root/root/.ssh/notes.txt") is None
+
+
+def test_root_ssh_check_still_matches_the_real_directory() -> None:
+    assert is_sensitive_path("/root/.ssh") == "~/.ssh"
+    assert is_sensitive_path("/root/.ssh/id_rsa") == "~/.ssh"
+
+
 def test_every_rm_in_a_compound_command_is_checked() -> None:
     """Issue #676: a benign leading ``rm`` must not shadow a later one.
 
