@@ -12,16 +12,8 @@ def coerce_schedule_from_params(params: dict[str, Any]) -> tuple[ScheduleKind, s
     schedule_raw = params.get("schedule")
     if isinstance(schedule_raw, dict):
         schedule = dict(schedule_raw)
-        top_level_tz = _top_level_tz(params)
-        if top_level_tz and schedule.get("kind") == ScheduleKind.CRON.value:
-            schedule_tz = schedule.get("tz")
-            if isinstance(schedule_tz, str):
-                schedule_tz = schedule_tz.strip()
-            else:
-                schedule_tz = ""
-            if schedule_tz and schedule_tz != top_level_tz:
-                raise ValueError("schedule.tz conflicts with tz")
-            schedule["tz"] = top_level_tz
+        if schedule.get("kind") == ScheduleKind.CRON.value:
+            schedule["tz"] = _resolve_cron_tz(schedule, params)
         return coerce_schedule(schedule)
     expression = params.get("expression")
     if isinstance(expression, str) and expression.strip():
@@ -38,6 +30,31 @@ def coerce_schedule_from_params(params: dict[str, Any]) -> tuple[ScheduleKind, s
             }
         )
     raise ValueError("params required: schedule (object) or expression (string)")
+
+
+def _resolve_cron_tz(schedule: dict[str, Any], params: dict[str, Any]) -> str:
+    """Resolve a structured cron schedule's effective timezone.
+
+    Honours the ``timezone`` alias both inside ``schedule`` (mirroring
+    ``schedule.tz``) and at the top level of ``params`` (via
+    ``_top_level_tz``, already used by the expression-shorthand path), and
+    rejects any conflicting values instead of silently preferring one.
+    """
+    tz_raw = schedule.get("tz")
+    timezone_raw = schedule.get("timezone")
+    for value in (tz_raw, timezone_raw):
+        if value is not None and not isinstance(value, str):
+            raise ValueError("schedule.tz must be a string IANA timezone name")
+    tz = tz_raw.strip() if isinstance(tz_raw, str) else ""
+    timezone = timezone_raw.strip() if isinstance(timezone_raw, str) else ""
+    if tz and timezone and tz != timezone:
+        raise ValueError("schedule.tz conflicts with schedule.timezone")
+    schedule_tz = tz or timezone
+
+    top_level_tz = _top_level_tz(params)
+    if schedule_tz and top_level_tz and schedule_tz != top_level_tz:
+        raise ValueError("schedule.tz conflicts with tz")
+    return schedule_tz or top_level_tz
 
 
 def _top_level_tz(params: dict[str, Any]) -> str:

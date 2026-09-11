@@ -42,6 +42,55 @@ def test_normalizer_rejects_conflicting_structured_and_top_level_tz() -> None:
         )
 
 
+def test_normalizer_structured_cron_accepts_timezone_alias() -> None:
+    # Regression for #1603: the `timezone` alias nested inside `schedule` was
+    # silently ignored -- only a top-level params.timezone was honoured via
+    # _top_level_tz. A caller passing {"schedule": {..., "timezone": "..."}}
+    # (no "tz" key anywhere) used to fall back to UTC with no error.
+    kind, value, tz = coerce_schedule_from_params(
+        {"schedule": {"kind": "cron", "expr": "0 9 * * 1-5", "timezone": "Asia/Shanghai"}}
+    )
+
+    assert kind == ScheduleKind.CRON
+    assert value == "0 9 * * 1-5"
+    assert tz == "Asia/Shanghai"
+
+
+def test_normalizer_rejects_conflicting_schedule_tz_and_schedule_timezone() -> None:
+    with pytest.raises(ValueError, match="schedule.tz conflicts with schedule.timezone"):
+        coerce_schedule_from_params(
+            {
+                "schedule": {
+                    "kind": "cron",
+                    "expr": "0 9 * * *",
+                    "tz": "Asia/Shanghai",
+                    "timezone": "America/Los_Angeles",
+                }
+            }
+        )
+
+
+def test_normalizer_rejects_conflicting_schedule_timezone_and_top_level_tz() -> None:
+    with pytest.raises(ValueError, match="schedule.tz conflicts with tz"):
+        coerce_schedule_from_params(
+            {
+                "schedule": {
+                    "kind": "cron",
+                    "expr": "0 9 * * *",
+                    "timezone": "Asia/Shanghai",
+                },
+                "tz": "America/Los_Angeles",
+            }
+        )
+
+
+def test_normalizer_rejects_non_string_schedule_timezone() -> None:
+    with pytest.raises(ValueError, match="schedule.tz must be a string IANA timezone name"):
+        coerce_schedule_from_params(
+            {"schedule": {"kind": "cron", "expr": "0 9 * * *", "timezone": 123}}
+        )
+
+
 def test_normalizer_accepts_every_seconds() -> None:
     kind, value, tz = coerce_schedule_from_params(
         {"schedule": {"kind": "every", "every_seconds": 300}}
