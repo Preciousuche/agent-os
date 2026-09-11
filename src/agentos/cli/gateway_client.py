@@ -513,6 +513,18 @@ class GatewayClient:
         sensitive paths still blocked), or "full" (host exec, auto-approve,
         sensitive paths bypassed).
         """
+        # _recv_queue is shared across the whole connection and every session
+        # this client has ever subscribed to; nothing left over from an
+        # earlier call belongs to the message we're about to send below --
+        # the server can't have emitted anything for it yet. This matters
+        # most right after abort_session(): its RPC response only confirms
+        # the abort request was received, not that the turn's own
+        # session.event.done(reason="aborted") has already arrived, so that
+        # event can otherwise still be sitting here when the next call
+        # starts and get mistaken for this one's completion.
+        while not self._recv_queue.empty():
+            self._recv_queue.get_nowait()
+
         # Subscribe to message events for this session
         await self._call("sessions.messages.subscribe", {"key": session_key})
 
