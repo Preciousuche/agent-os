@@ -80,6 +80,14 @@ def merge(items: Iterable[dict[str, str]], out: Path) -> int:
     writer = PdfWriter()
     count = 0
     for item in items:
+        # ``load_manifest`` rejects these shapes up front, but ``merge`` is also
+        # called directly, and an unusable entry there should skip like a missing
+        # file rather than raise ``TypeError``/``KeyError`` from inside the loop.
+        # Skipping every entry leaves ``count`` at 0, which the caller already
+        # treats as a failure.
+        if not isinstance(item, dict) or not isinstance(item.get("file"), str):
+            print(f"warn: skipping unusable manifest entry {item!r}", file=sys.stderr)
+            continue
         path = Path(item["file"])
         if not path.is_file():
             print(f"warn: missing {path}", file=sys.stderr)

@@ -245,6 +245,34 @@ def test_merge_does_not_create_the_parent_directory_for_nothing(tmp_path: Path) 
     assert not out.parent.exists()
 
 
+def test_merge_called_directly_skips_an_unusable_entry(tmp_path: Path) -> None:
+    """`merge` is public, not only reached through `load_manifest`. A caller that
+    hands it a bad entry should get the missing-file treatment, not a TypeError
+    from `item["file"]` half way through a partly-built document."""
+    merge = _merge_module()
+    good = tmp_path / "a.pdf"
+    _make_one_page_pdf(good, "ALPHA")
+    out = tmp_path / "out.pdf"
+
+    written = merge.merge(
+        ["not-a-dict", {"pages": "1"}, {"file": 7}, {"file": str(good)}],  # type: ignore[list-item]
+        out,
+    )
+
+    assert written == 1
+    assert out.is_file()
+
+
+def test_merge_called_directly_with_only_unusable_entries_writes_nothing(
+    tmp_path: Path,
+) -> None:
+    merge = _merge_module()
+    out = tmp_path / "out.pdf"
+
+    assert merge.merge(["not-a-dict", {"pages": "1"}], out) == 0  # type: ignore[list-item]
+    assert not out.exists()
+
+
 def test_merge_exits_2_when_nothing_was_merged(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
