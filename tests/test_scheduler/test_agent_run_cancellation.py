@@ -163,6 +163,41 @@ async def test_cancellation_only_touches_the_task_this_handler_submitted() -> No
 
 
 @pytest.mark.asyncio
+async def test_a_runtime_without_cancel_does_not_break_the_timeout() -> None:
+    """`_cancel_runtime_task` probes for `cancel` with getattr, so an older or
+    partial runtime adapter has none. Cancelling must still propagate and the
+    run must still be recorded as a timeout, rather than dying on AttributeError
+    inside the cleanup and masking the real outcome."""
+
+    class _NoCancelRuntime(_GatedTaskRuntime):
+        cancel = None  # type: ignore[assignment]
+
+    runtime = _NoCancelRuntime()
+
+    execution = await execute_with_timeout(_job(), _handler(runtime, _FakeSessionManager()))
+
+    assert execution.success is False
+    assert runtime.cancelled == []
+
+
+@pytest.mark.asyncio
+async def test_a_failing_cancel_does_not_mask_the_timeout() -> None:
+    """The adapter swallows cancel errors on purpose. If it did not, a runtime
+    that raises on cancel would replace the timeout with its own exception."""
+
+    class _AngryRuntime(_GatedTaskRuntime):
+        async def cancel(self, task_id: str):
+            raise RuntimeError("runtime is unreachable")
+
+    runtime = _AngryRuntime()
+
+    execution = await execute_with_timeout(_job(), _handler(runtime, _FakeSessionManager()))
+
+    assert execution.success is False
+    assert execution.error and "timeout" in execution.error.lower()
+
+
+@pytest.mark.asyncio
 async def test_the_timeout_is_still_reported_to_the_scheduler() -> None:
     """Cancelling the turn must not swallow the cancellation: the scheduler
     still has to record the run as a timeout."""
