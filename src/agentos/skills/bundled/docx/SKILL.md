@@ -99,6 +99,14 @@ runs in place. This preserves all theme/style/font settings.
 `replace_text` walks body paragraphs and every table cell (nested tables
 included), so placeholders inside contract or invoice tables are found too.
 
+`ops.json` must be a JSON **array** of objects, each with a known `op`
+(`replace_run` or `replace_text`). An unparseable file, a non-array, or an
+unknown `op` exits 2 with `error: …` and writes nothing — the ops are
+validated before the document is opened, so a typo like `replace-text` fails
+loudly instead of producing an unchanged copy at `--out`. `create_docx.py`
+validates its spec the same way and now prints an `{"entries": N, "out": …}`
+summary on success.
+
 Edit at the **run** level, not the paragraph level — replacing whole paragraph
 text drops formatting. If a placeholder spans multiple runs (often happens
 when the original template applied bold/italic mid-word), the helper script
