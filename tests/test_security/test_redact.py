@@ -231,6 +231,44 @@ class TestNameSegments:
         names into credentials: only a strong segment or a qualified pair does."""
         assert not redact._is_credential_name(name)
 
+    @pytest.mark.parametrize(
+        ("first", "second"),
+        [
+            ("api", "secret"),
+            ("api", "token"),
+            ("api", "key"),
+            ("access", "token"),
+            ("access", "key"),
+            ("client", "secret"),
+            ("private", "key"),
+            ("session", "token"),
+            ("auth", "token"),
+        ],
+    )
+    def test_every_spelling_of_one_credential_agrees(self, first: str, second: str) -> None:
+        """The contract `_name_segments` documents, asserted rather than implied.
+
+        The bug was never that one spelling failed in isolation -- it was that
+        spellings disagreed, so the same credential was masked in a dump and
+        leaked two lines later. Pin the agreement, not the individual verdicts.
+        """
+        spellings = {
+            "SCREAMING_SNAKE": f"{first.upper()}_{second.upper()}",
+            "kebab": f"{first}-{second}",
+            "camel": f"{first}{second.capitalize()}",
+            "Pascal": f"{first.capitalize()}{second.capitalize()}",
+            "ACRONYM": f"{first.upper()}{second.capitalize()}",
+            "snake": f"{first}_{second}",
+        }
+        verdicts = {
+            style: redact._is_credential_name(name) for style, name in spellings.items()
+        }
+
+        assert set(verdicts.values()) == {True}, (
+            f"spellings disagree for {first}+{second}: "
+            f"{ {spellings[s]: v for s, v in verdicts.items()} }"
+        )
+
     @pytest.mark.parametrize("name", ["APISECRET", "DBPASSWORD", "APIKEY", "apikey"])
     def test_separator_less_all_caps_names_are_left_alone(self, name: str) -> None:
         """``APISECRET`` has no boundary to find and guessing at one is what the
