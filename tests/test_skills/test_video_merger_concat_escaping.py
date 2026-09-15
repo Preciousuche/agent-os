@@ -92,8 +92,12 @@ def parsed_path(entry: str) -> str:
     [
         ("'/tmp/a.mp4'", "/tmp/a.mp4"),
         ("/tmp/a.mp4", "/tmp/a.mp4"),
-        (r"C:\Users\a.mp4", "C:Usersa.mp4"),  # unquoted: backslashes are eaten
-        (r"'C:\Users\a.mp4'", r"C:\Users\a.mp4"),  # quoted: verbatim
+        # A drive path under a project directory, not under a home directory:
+        # `test_public_release_hygiene` rejects anything shaped like a
+        # contributor's home path, and the semantics pinned here are identical
+        # whichever directory the file sits in.
+        (r"C:\Videos\a.mp4", "C:Videosa.mp4"),  # unquoted: backslashes are eaten
+        (r"'C:\Videos\a.mp4'", r"C:\Videos\a.mp4"),  # quoted: verbatim
         ("'it'\\''s.mp4'", "it's.mp4"),  # the close/escape/reopen form
         ("'unterminated", "unterminated"),
     ],
