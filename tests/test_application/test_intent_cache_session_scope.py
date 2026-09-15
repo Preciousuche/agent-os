@@ -211,10 +211,24 @@ def test_a_relative_grant_matches_its_own_absolute_spelling(
 def test_an_absolute_target_ignores_the_workspace(
     cache: IntentApprovalCache, tmp_path: Path
 ) -> None:
-    """A base dir must not be joined onto a path that is already absolute."""
-    cache.record_always(f"rm -rf {TARGET}", session_key=ALICE, base_dir=tmp_path)
+    """A base dir must not be joined onto a path that is already absolute.
 
-    assert cache._entries.keys().__iter__().__next__()[2] == _abs(TARGET)
+    The target is built from ``tmp_path`` rather than written as ``/srv/...``:
+    on Windows a rooted path with no drive letter is *drive-relative*, so
+    ``Path("/srv").is_absolute()`` is False there and joining the base dir onto
+    it is correct behaviour, not the bug this pins. ``as_posix`` keeps forward
+    slashes, which makes the path absolute on Windows and also keeps it clear
+    of ``shlex``, whose escape handling eats a native backslash path inside a
+    command string.
+    """
+    absolute_target = (tmp_path / "data").as_posix()
+    other_workspace = tmp_path / "somewhere-else"
+
+    cache.record_always(f"rm -rf {absolute_target}", session_key=ALICE, base_dir=other_workspace)
+
+    recorded_target = next(iter(cache._entries))[2]
+    assert recorded_target == _abs(absolute_target)
+    assert "somewhere-else" not in recorded_target
 
 
 # ── forget is deliberately broader than check ───────────────────────────────
