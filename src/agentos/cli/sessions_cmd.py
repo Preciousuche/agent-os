@@ -43,7 +43,14 @@ _COMPACT_DATE_LEN = 8
 _MIN_EPOCH_SECONDS = 100_000_000
 
 #: Above this, seconds would be past the year 2286, so the value is milliseconds.
-_MAX_EPOCH_SECONDS = 10_000_000_000
+_MILLIS_THRESHOLD_SECONDS = 10_000_000_000
+
+#: The upper end of what counts as a session timestamp, 2200-01-01. Bounded
+#: explicitly so the answer does not depend on the platform:
+#: ``datetime.fromtimestamp`` accepts up to year 9999 on Linux, while the
+#: Windows CRT rejects anything past roughly year 3000, so an unbounded value
+#: parsed cleanly on one and raised on the other.
+_MAX_EPOCH_SECONDS = 7_258_118_400
 
 _SINCE_HELP = (
     "--since must be an ISO date/datetime (2026-09-14, 2026-09-14T08:00:00Z), "
@@ -57,9 +64,17 @@ def _epoch_to_datetime(number: float) -> datetime:
     ``fromtimestamp`` raises ``OSError``/``OverflowError`` -- not ``ValueError``
     -- for an out-of-range value, so both are normalised to ``ValueError`` for
     every caller to handle in one place.
+
+    The range is also checked here rather than left to the platform. What
+    ``fromtimestamp`` accepts differs by OS -- Linux goes to year 9999, the
+    Windows CRT stops around year 3000 -- so the same ``--since`` would be
+    rejected on one machine and silently accepted as a year-5138 filter on
+    another.
     """
-    if number > _MAX_EPOCH_SECONDS:
+    if number > _MILLIS_THRESHOLD_SECONDS:
         number = number / 1000
+    if number > _MAX_EPOCH_SECONDS:
+        raise ValueError(f"{number} is beyond any plausible session timestamp")
     try:
         return datetime.fromtimestamp(number, tz=UTC)
     except (OverflowError, OSError, ValueError) as exc:

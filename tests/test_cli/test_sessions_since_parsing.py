@@ -39,11 +39,30 @@ def test_since_rejects_what_it_cannot_read(raw: str) -> None:
         sessions_cmd._parse_since(raw)
 
 
-def test_since_rejects_an_out_of_range_timestamp_without_a_traceback() -> None:
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "99999999999999",  # ~year 5138 after the millis divide
+        "999999999999999999",  # far past anything any platform accepts
+        "9999999999999999999999",
+    ],
+)
+def test_since_rejects_an_out_of_range_timestamp_without_a_traceback(raw: str) -> None:
     """`fromtimestamp` raises OSError/OverflowError, not ValueError, so this
-    escaped the `except ValueError` and reached the user as a traceback."""
+    escaped the `except ValueError` and reached the user as a traceback.
+
+    The range is checked explicitly rather than left to the platform: Linux
+    accepts timestamps up to year 9999 while the Windows CRT stops near year
+    3000, so `--since 99999999999999` used to raise on Windows and quietly
+    become a year-5138 filter on Linux. Same input, same answer, either way.
+    """
     with pytest.raises(typer.BadParameter):
-        sessions_cmd._parse_since("99999999999999")
+        sessions_cmd._parse_since(raw)
+
+
+def test_a_far_future_row_timestamp_is_skipped_rather_than_crashing() -> None:
+    """The row path shares the bound and must still degrade quietly."""
+    assert sessions_cmd._row_datetime({"updated_at": 99999999999999}) is None
 
 
 @pytest.mark.parametrize("raw", ["", "   ", None])
