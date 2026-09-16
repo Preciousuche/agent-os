@@ -25,6 +25,33 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _url import require_http_url  # noqa: E402
 from _watermark import positive_int, select_new  # noqa: E402
 
+
+def _write_stdout(text: str) -> None:
+    """Write *text* to stdout as UTF-8, surviving a non-UTF-8 stdout encoding.
+
+    ``print`` encodes through ``sys.stdout.encoding``, which on Windows is the
+    console code page (cp1252, cp936, cp932) rather than UTF-8, so a character
+    outside that page raises ``UnicodeEncodeError`` before a byte is written --
+    the content decides whether the skill runs at all. The binary buffer is the
+    primary path; a stream without a usable ``buffer`` -- a wrapper, or a
+    captured stdout -- still gets the text, escaped rather than lost.
+    """
+    buffer = getattr(sys.stdout, "buffer", None)
+    if buffer is not None:
+        try:
+            buffer.write(text.encode("utf-8"))
+            buffer.flush()
+            return
+        except (AttributeError, OSError, ValueError):
+            # Buffer closed or not writable -- fall through to the text layer.
+            pass
+
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    # Lossless: unencodable chars become escapes, not "?".
+    sys.stdout.write(text.encode(encoding, errors="backslashreplace").decode(encoding))
+    sys.stdout.flush()
+
+
 USER_AGENT = "AgentOS-cron-watcher/1.0"
 
 
@@ -104,7 +131,7 @@ def main() -> int:
 
     for guid in fresh:
         _, title, link = by_id[guid]
-        print(f"- {title or guid}" + (f"\n  {link}" if link else ""))
+        _write_stdout(f"- {title or guid}" + (f"\n  {link}" if link else "") + "\n")
     return 0
 
 

@@ -31,6 +31,7 @@ Auth:
 
 Output: prints the absolute path of the saved PNG on stdout.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -43,6 +44,33 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
+
+
+def _write_stdout(text: str) -> None:
+    """Write *text* to stdout as UTF-8, surviving a non-UTF-8 stdout encoding.
+
+    ``print`` encodes through ``sys.stdout.encoding``, which on Windows is the
+    console code page (cp1252, cp936, cp932) rather than UTF-8, so a character
+    outside that page raises ``UnicodeEncodeError`` before a byte is written --
+    the content decides whether the skill runs at all. The binary buffer is the
+    primary path; a stream without a usable ``buffer`` -- a wrapper, or a
+    captured stdout -- still gets the text, escaped rather than lost.
+    """
+    buffer = getattr(sys.stdout, "buffer", None)
+    if buffer is not None:
+        try:
+            buffer.write(text.encode("utf-8"))
+            buffer.flush()
+            return
+        except (AttributeError, OSError, ValueError):
+            # Buffer closed or not writable -- fall through to the text layer.
+            pass
+
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    # Lossless: unencodable chars become escapes, not "?".
+    sys.stdout.write(text.encode(encoding, errors="backslashreplace").decode(encoding))
+    sys.stdout.flush()
+
 
 DEFAULT_MODEL = "google/gemini-3.1-flash-image-preview"
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
@@ -196,7 +224,9 @@ def encode_input_image(path: str) -> str:
     return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
 
 
-def build_payload(prompt: str, input_image: str | None, aspect_ratio: str, image_size: str, model: str) -> dict:
+def build_payload(
+    prompt: str, input_image: str | None, aspect_ratio: str, image_size: str, model: str
+) -> dict:
     user_content: list = [{"type": "text", "text": prompt}]
     if input_image:
         user_content.append(
@@ -345,23 +375,33 @@ def main() -> int:
     parser.add_argument("--prompt", "-p", required=True)
     parser.add_argument("--filename", "-f", required=True, help="Output filename (.png)")
     parser.add_argument("--input-image", "-i", help="Optional reference image path")
-    parser.add_argument("--aspect-ratio", default="1:1", choices=["1:1", "3:2", "2:3", "16:9", "9:16", "4:3", "3:4"])
+    parser.add_argument(
+        "--aspect-ratio", default="1:1", choices=["1:1", "3:2", "2:3", "16:9", "9:16", "4:3", "3:4"]
+    )
     parser.add_argument("--image-size", default="1K", choices=["1K", "2K", "4K"])
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument(
-        "--max-retries", type=int, default=0,
+        "--max-retries",
+        type=int,
+        default=0,
         help="Extra retries on the PRIMARY model before moving on to --fallback-model entries. Default 0.",
     )
     parser.add_argument(
-        "--fallback-model", action="append", default=[],
+        "--fallback-model",
+        action="append",
+        default=[],
         help="Repeatable. Each is tried ONCE after the primary model exhausts its retries.",
     )
     parser.add_argument(
-        "--placeholder-on-fail", default="no", choices=["yes", "no"],
+        "--placeholder-on-fail",
+        default="no",
+        choices=["yes", "no"],
         help="When every model refuses, write a solid-colour placeholder PNG instead of exiting non-zero. Default no.",
     )
     parser.add_argument(
-        "--retry-backoff-cap", type=int, default=8,
+        "--retry-backoff-cap",
+        type=int,
+        default=8,
         help="Maximum sleep seconds between retries (exponential backoff capped here).",
     )
     parser.add_argument("--api-key", "-k")
@@ -414,13 +454,13 @@ def main() -> int:
                 timeout=args.timeout,
             )
             out_path.write_bytes(image_bytes)
-            print(str(out_path))
+            _write_stdout(str(out_path) + "\n")
             return 0
         except Exception as exc:  # noqa: BLE001 - we want to capture and continue
             last_error = f"[{model} #{n}] {exc}"
             print(f"  {last_error}", file=sys.stderr)
             if attempt_idx < len(schedule):
-                backoff = min(2 ** n, args.retry_backoff_cap)
+                backoff = min(2**n, args.retry_backoff_cap)
                 print(f"  sleeping {backoff}s before next attempt", file=sys.stderr)
                 time.sleep(backoff)
 
@@ -435,7 +475,7 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             print(f"Error: placeholder generation failed: {exc}", file=sys.stderr)
             return 1
-        print(str(out_path))
+        _write_stdout(str(out_path) + "\n")
         return 0
 
     print(

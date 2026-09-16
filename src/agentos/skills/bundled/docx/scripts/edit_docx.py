@@ -29,6 +29,32 @@ from docx.table import Table, _Cell
 from docx.text.paragraph import Paragraph
 
 
+def _write_stdout(text: str) -> None:
+    """Write *text* to stdout as UTF-8, surviving a non-UTF-8 stdout encoding.
+
+    ``print`` encodes through ``sys.stdout.encoding``, which on Windows is the
+    console code page (cp1252, cp936, cp932) rather than UTF-8, so a character
+    outside that page raises ``UnicodeEncodeError`` before a byte is written --
+    the content decides whether the skill runs at all. The binary buffer is the
+    primary path; a stream without a usable ``buffer`` -- a wrapper, or a
+    captured stdout -- still gets the text, escaped rather than lost.
+    """
+    buffer = getattr(sys.stdout, "buffer", None)
+    if buffer is not None:
+        try:
+            buffer.write(text.encode("utf-8"))
+            buffer.flush()
+            return
+        except (AttributeError, OSError, ValueError):
+            # Buffer closed or not writable -- fall through to the text layer.
+            pass
+
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    # Lossless: unencodable chars become escapes, not "?".
+    sys.stdout.write(text.encode(encoding, errors="backslashreplace").decode(encoding))
+    sys.stdout.flush()
+
+
 def _replace_run(para: Paragraph, run_idx: int, text: str) -> bool:
     """Overwrite one run's text; return whether the run existed."""
     if not 0 <= run_idx < len(para.runs):
@@ -190,7 +216,7 @@ def main() -> int:
     applied = apply_ops(doc, ops)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(args.out))
-    print(json.dumps({"applied": applied}, ensure_ascii=False))
+    _write_stdout(json.dumps({"applied": applied}, ensure_ascii=False) + "\n")
     return 0
 
 

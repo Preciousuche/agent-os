@@ -35,6 +35,7 @@ Usage:
         [--aspect-ratio 9:16] [--duration 5] [--resolution 720p] \\
         [--model MODEL_ID] [--api-key KEY] [--base-url URL]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -50,9 +51,39 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
+
+def _write_stdout(text: str) -> None:
+    """Write *text* to stdout as UTF-8, surviving a non-UTF-8 stdout encoding.
+
+    ``print`` encodes through ``sys.stdout.encoding``, which on Windows is the
+    console code page (cp1252, cp936, cp932) rather than UTF-8, so a character
+    outside that page raises ``UnicodeEncodeError`` before a byte is written --
+    the content decides whether the skill runs at all. The binary buffer is the
+    primary path; a stream without a usable ``buffer`` -- a wrapper, or a
+    captured stdout -- still gets the text, escaped rather than lost.
+    """
+    buffer = getattr(sys.stdout, "buffer", None)
+    if buffer is not None:
+        try:
+            buffer.write(text.encode("utf-8"))
+            buffer.flush()
+            return
+        except (AttributeError, OSError, ValueError):
+            # Buffer closed or not writable -- fall through to the text layer.
+            pass
+
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    # Lossless: unencodable chars become escapes, not "?".
+    sys.stdout.write(text.encode(encoding, errors="backslashreplace").decode(encoding))
+    sys.stdout.flush()
+
+
 TERMINAL_STATES = {
-    "completed", "succeeded",
-    "failed", "cancelled", "expired",
+    "completed",
+    "succeeded",
+    "failed",
+    "cancelled",
+    "expired",
 }
 SUCCESS_STATES = {"completed", "succeeded"}
 
@@ -97,7 +128,7 @@ class Provider:
     default_env: tuple[str, ...]
     submit_path: str
     polls_url_in_response: bool  # True = use submit response's polling_url;
-                                 # False = construct from id
+    # False = construct from id
     build_payload: Callable[[Args], dict]
     extract_url: Callable[[dict], str | None]
 
@@ -254,6 +285,7 @@ PROVIDERS: dict[str, Provider] = {
 @dataclass
 class Args:
     """Typed mirror of argparse.Namespace, used by per-provider builders."""
+
     prompt: str
     model: str
     aspect_ratio: str
@@ -461,9 +493,7 @@ def _poll(
         if status in TERMINAL_STATES:
             return last
         time.sleep(poll_interval)
-    raise RuntimeError(
-        f"Polling timeout after {timeout_total}s; last status={last.get('status')}"
-    )
+    raise RuntimeError(f"Polling timeout after {timeout_total}s; last status={last.get('status')}")
 
 
 # -------- single attempt ------------------------------------------------------
@@ -493,15 +523,19 @@ def _run_attempt(
     polling_url = submit.get("polling_url")
     if not job_id:
         raise _AttemptError(
-            "submit response missing job id; raw="
-            + json.dumps(submit, ensure_ascii=False)[:600]
+            "submit response missing job id; raw=" + json.dumps(submit, ensure_ascii=False)[:600]
         )
     print(f"  job_id={job_id}", file=sys.stderr)
 
     try:
         final = _poll(
-            provider, base_url, api_key, job_id, polling_url,
-            timeout_total, poll_interval,
+            provider,
+            base_url,
+            api_key,
+            job_id,
+            polling_url,
+            timeout_total,
+            poll_interval,
         )
     except Exception as exc:
         raise _AttemptError(f"poll failed: {exc}") from exc
@@ -510,15 +544,13 @@ def _run_attempt(
     if status not in SUCCESS_STATES:
         err = final.get("error") or final
         raise _AttemptError(
-            f"job ended with status={status}: "
-            + json.dumps(err, ensure_ascii=False)[:600]
+            f"job ended with status={status}: " + json.dumps(err, ensure_ascii=False)[:600]
         )
 
     content_url = provider.extract_url(final)
     if not content_url:
         raise _AttemptError(
-            "completed job has no content URL; raw="
-            + json.dumps(final, ensure_ascii=False)[:600]
+            "completed job has no content URL; raw=" + json.dumps(final, ensure_ascii=False)[:600]
         )
 
     print(f"==> downloading {content_url[:80]}...", file=sys.stderr)
@@ -536,7 +568,9 @@ def main() -> int:
     parser.add_argument("--prompt", "-p", required=True)
     parser.add_argument("--filename", "-f", required=True)
     parser.add_argument(
-        "--provider", choices=tuple(PROVIDERS), default="openrouter",
+        "--provider",
+        choices=tuple(PROVIDERS),
+        default="openrouter",
         help="Backend API (default: openrouter)",
     )
     parser.add_argument("--input-image", "-i", default="")
@@ -548,32 +582,40 @@ def main() -> int:
         help="Style/identity reference image path; repeatable. Used only when --input-image is empty.",
     )
     parser.add_argument(
-        "--aspect-ratio", default="9:16",
+        "--aspect-ratio",
+        default="9:16",
         choices=["9:16", "16:9", "1:1", "4:3", "3:4", "21:9"],
     )
     parser.add_argument("--duration", type=int, default=5)
     parser.add_argument(
-        "--resolution", default="720p",
+        "--resolution",
+        default="720p",
         choices=["480p", "720p", "1080p"],
         help="Output resolution (volcengine/byteplus only; ignored by openrouter)",
     )
     parser.add_argument(
-        "--model", default="",
+        "--model",
+        default="",
         help="Override the model id. Defaults to the provider's recommended model.",
     )
     parser.add_argument("--api-key", "-k", default="")
     parser.add_argument(
-        "--base-url", default="",
+        "--base-url",
+        default="",
         help="Override the provider's base URL.",
     )
     parser.add_argument("--poll-interval", type=int, default=5)
     parser.add_argument("--timeout-total", type=int, default=600)
     parser.add_argument(
-        "--max-retries", type=int, default=0,
+        "--max-retries",
+        type=int,
+        default=0,
         help="Extra retries on transient submit/poll/download failures or non-success terminal status. 0 = single attempt (default).",
     )
     parser.add_argument(
-        "--retry-backoff-cap", type=int, default=15,
+        "--retry-backoff-cap",
+        type=int,
+        default=15,
         help="Maximum sleep seconds between retries (exponential backoff is capped here).",
     )
     raw = parser.parse_args()
@@ -586,7 +628,9 @@ def main() -> int:
     base_url = raw.base_url or provider.default_base_url
     model_id = raw.model or provider.default_model
     api_key = _resolve_api_key(
-        raw.api_key or None, provider.default_env, provider_name=provider.name,
+        raw.api_key or None,
+        provider.default_env,
+        provider_name=provider.name,
     )
     if not api_key:
         env_hint = " / ".join(provider.default_env)
@@ -646,13 +690,13 @@ def main() -> int:
                 poll_interval=raw.poll_interval,
             )
             out_path.write_bytes(video_bytes)
-            print(str(out_path))
+            _write_stdout(str(out_path) + "\n")
             return 0
         except _AttemptError as exc:
             last_error = str(exc)
             print(f"  attempt {attempt} failed: {last_error}", file=sys.stderr)
             if attempt < attempts:
-                backoff = min(2 ** attempt, raw.retry_backoff_cap)
+                backoff = min(2**attempt, raw.retry_backoff_cap)
                 print(f"  retrying in {backoff}s...", file=sys.stderr)
                 time.sleep(backoff)
 

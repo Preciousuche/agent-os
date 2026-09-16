@@ -16,6 +16,32 @@ import urllib.error
 import urllib.request
 
 
+def _write_stdout(text: str) -> None:
+    """Write *text* to stdout as UTF-8, surviving a non-UTF-8 stdout encoding.
+
+    ``print`` encodes through ``sys.stdout.encoding``, which on Windows is the
+    console code page (cp1252, cp936, cp932) rather than UTF-8, so a character
+    outside that page raises ``UnicodeEncodeError`` before a byte is written --
+    the content decides whether the skill runs at all. The binary buffer is the
+    primary path; a stream without a usable ``buffer`` -- a wrapper, or a
+    captured stdout -- still gets the text, escaped rather than lost.
+    """
+    buffer = getattr(sys.stdout, "buffer", None)
+    if buffer is not None:
+        try:
+            buffer.write(text.encode("utf-8"))
+            buffer.flush()
+            return
+        except (AttributeError, OSError, ValueError):
+            # Buffer closed or not writable -- fall through to the text layer.
+            pass
+
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    # Lossless: unencodable chars become escapes, not "?".
+    sys.stdout.write(text.encode(encoding, errors="backslashreplace").decode(encoding))
+    sys.stdout.flush()
+
+
 def _fetch(
     url: str,
     method: str,
@@ -85,7 +111,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Lossy decode — meta-skill DAGs need string output for templating.
     text = raw.decode("utf-8", errors="replace")
-    sys.stdout.write(text)
+    _write_stdout(text)
 
     if not (200 <= status < 300):
         preview = text[:200].replace("\n", " ")

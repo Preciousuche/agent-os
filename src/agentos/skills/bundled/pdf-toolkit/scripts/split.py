@@ -21,6 +21,32 @@ from pathlib import Path
 from pypdf import PdfReader, PdfWriter
 
 
+def _write_stdout(text: str) -> None:
+    """Write *text* to stdout as UTF-8, surviving a non-UTF-8 stdout encoding.
+
+    ``print`` encodes through ``sys.stdout.encoding``, which on Windows is the
+    console code page (cp1252, cp936, cp932) rather than UTF-8, so a character
+    outside that page raises ``UnicodeEncodeError`` before a byte is written --
+    the content decides whether the skill runs at all. The binary buffer is the
+    primary path; a stream without a usable ``buffer`` -- a wrapper, or a
+    captured stdout -- still gets the text, escaped rather than lost.
+    """
+    buffer = getattr(sys.stdout, "buffer", None)
+    if buffer is not None:
+        try:
+            buffer.write(text.encode("utf-8"))
+            buffer.flush()
+            return
+        except (AttributeError, OSError, ValueError):
+            # Buffer closed or not writable -- fall through to the text layer.
+            pass
+
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    # Lossless: unencodable chars become escapes, not "?".
+    sys.stdout.write(text.encode(encoding, errors="backslashreplace").decode(encoding))
+    sys.stdout.flush()
+
+
 def split_ranges(spec: str) -> list[list[int]]:
     groups: list[list[int]] = []
     for token in spec.split(","):
@@ -100,7 +126,7 @@ def main() -> int:
             f"warn: skipped pages outside 1-{result.total_pages} of {args.input}: {skipped}",
             file=sys.stderr,
         )
-    print(
+    _write_stdout(
         json.dumps(
             {
                 "files": [str(p) for p in result.files],
@@ -111,6 +137,7 @@ def main() -> int:
             },
             ensure_ascii=False,
         )
+        + "\n"
     )
     return 0
 

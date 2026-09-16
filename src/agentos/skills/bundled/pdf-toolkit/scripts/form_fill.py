@@ -16,6 +16,32 @@ from typing import Any
 from pypdf import PdfReader, PdfWriter
 
 
+def _write_stdout(text: str) -> None:
+    """Write *text* to stdout as UTF-8, surviving a non-UTF-8 stdout encoding.
+
+    ``print`` encodes through ``sys.stdout.encoding``, which on Windows is the
+    console code page (cp1252, cp936, cp932) rather than UTF-8, so a character
+    outside that page raises ``UnicodeEncodeError`` before a byte is written --
+    the content decides whether the skill runs at all. The binary buffer is the
+    primary path; a stream without a usable ``buffer`` -- a wrapper, or a
+    captured stdout -- still gets the text, escaped rather than lost.
+    """
+    buffer = getattr(sys.stdout, "buffer", None)
+    if buffer is not None:
+        try:
+            buffer.write(text.encode("utf-8"))
+            buffer.flush()
+            return
+        except (AttributeError, OSError, ValueError):
+            # Buffer closed or not writable -- fall through to the text layer.
+            pass
+
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    # Lossless: unencodable chars become escapes, not "?".
+    sys.stdout.write(text.encode(encoding, errors="backslashreplace").decode(encoding))
+    sys.stdout.flush()
+
+
 def list_fields(path: Path) -> dict[str, Any]:
     reader = PdfReader(str(path))
     raw = reader.get_fields() or {}
@@ -61,7 +87,9 @@ def main() -> int:
         print(f"error: input {args.input} not found", file=sys.stderr)
         return 2
     if args.list_fields:
-        print(json.dumps(list_fields(args.input), ensure_ascii=False, indent=2, default=str))
+        _write_stdout(
+            json.dumps(list_fields(args.input), ensure_ascii=False, indent=2, default=str) + "\n"
+        )
         return 0
     if args.data is None or args.out is None:
         print("error: data and --out are required unless --list-fields", file=sys.stderr)
@@ -87,7 +115,9 @@ def main() -> int:
         return 2
     data = {str(k): str(v) for k, v in raw.items()}
     pages = fill(args.input, data, args.out)
-    print(json.dumps({"pages_processed": pages, "fields": len(data)}, ensure_ascii=False))
+    _write_stdout(
+        json.dumps({"pages_processed": pages, "fields": len(data)}, ensure_ascii=False) + "\n"
+    )
     return 0
 
 

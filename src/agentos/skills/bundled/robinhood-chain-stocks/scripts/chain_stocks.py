@@ -28,6 +28,33 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+
+def _write_stdout(text: str) -> None:
+    """Write *text* to stdout as UTF-8, surviving a non-UTF-8 stdout encoding.
+
+    ``print`` encodes through ``sys.stdout.encoding``, which on Windows is the
+    console code page (cp1252, cp936, cp932) rather than UTF-8, so a character
+    outside that page raises ``UnicodeEncodeError`` before a byte is written --
+    the content decides whether the skill runs at all. The binary buffer is the
+    primary path; a stream without a usable ``buffer`` -- a wrapper, or a
+    captured stdout -- still gets the text, escaped rather than lost.
+    """
+    buffer = getattr(sys.stdout, "buffer", None)
+    if buffer is not None:
+        try:
+            buffer.write(text.encode("utf-8"))
+            buffer.flush()
+            return
+        except (AttributeError, OSError, ValueError):
+            # Buffer closed or not writable -- fall through to the text layer.
+            pass
+
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    # Lossless: unencodable chars become escapes, not "?".
+    sys.stdout.write(text.encode(encoding, errors="backslashreplace").decode(encoding))
+    sys.stdout.flush()
+
+
 CHAIN_ID = 4663
 DEFAULT_RPC_URL = "https://rpc.mainnet.chain.robinhood.com"
 EXPLORER_URL = "https://robinhoodchain.blockscout.com"
@@ -451,21 +478,23 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if not args.query and not args.address:
-        print(json.dumps({"error": "provide --query or --address"}))
+        _write_stdout(json.dumps({"error": "provide --query or --address"}) + "\n")
         return 0
     if args.holder and not _ADDRESS_RE.match(args.holder):
-        print(json.dumps({"error": f"not a valid holder address: {args.holder}"}))
+        _write_stdout(json.dumps({"error": f"not a valid holder address: {args.holder}"}) + "\n")
         return 0
     try:
         args.rpc_url = _validate_http_url(args.rpc_url)
     except ValueError as exc:
-        print(json.dumps({"error": f"invalid rpc-url: {exc}"}, ensure_ascii=False))
+        _write_stdout(json.dumps({"error": f"invalid rpc-url: {exc}"}, ensure_ascii=False) + "\n")
         return 0
 
     try:
         address, listed, feeds = _resolve_target(args, args.timeout)
     except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
-        print(json.dumps({"query": args.query, "error": str(exc)}, ensure_ascii=False))
+        _write_stdout(
+            json.dumps({"query": args.query, "error": str(exc)}, ensure_ascii=False) + "\n"
+        )
         return 0
 
     symbol = str((listed or {}).get("symbol", "")) or ""
@@ -514,7 +543,7 @@ def main(argv: list[str] | None = None) -> int:
         "sources": {"tokenList": TOKEN_LIST_URL, "priceFeeds": FEEDS_URL},
         "token": state,
     }
-    print(json.dumps(result, ensure_ascii=False))
+    _write_stdout(json.dumps(result, ensure_ascii=False) + "\n")
     if not args.no_cards:
         _write_cards(result, args.cards or _default_cards_name(result))
     return 0

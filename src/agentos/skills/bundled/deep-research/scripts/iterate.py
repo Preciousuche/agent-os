@@ -13,6 +13,32 @@ sys.path.insert(0, str(SCRIPT_DIR))
 from plan import DEPTHS, Plan, Source  # type: ignore[import-not-found]  # noqa: E402
 
 
+def _write_stdout(text: str) -> None:
+    """Write *text* to stdout as UTF-8, surviving a non-UTF-8 stdout encoding.
+
+    ``print`` encodes through ``sys.stdout.encoding``, which on Windows is the
+    console code page (cp1252, cp936, cp932) rather than UTF-8, so a character
+    outside that page raises ``UnicodeEncodeError`` before a byte is written --
+    the content decides whether the skill runs at all. The binary buffer is the
+    primary path; a stream without a usable ``buffer`` -- a wrapper, or a
+    captured stdout -- still gets the text, escaped rather than lost.
+    """
+    buffer = getattr(sys.stdout, "buffer", None)
+    if buffer is not None:
+        try:
+            buffer.write(text.encode("utf-8"))
+            buffer.flush()
+            return
+        except (AttributeError, OSError, ValueError):
+            # Buffer closed or not writable -- fall through to the text layer.
+            pass
+
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    # Lossless: unencodable chars become escapes, not "?".
+    sys.stdout.write(text.encode(encoding, errors="backslashreplace").decode(encoding))
+    sys.stdout.flush()
+
+
 def load_plan(path: Path) -> Plan:
     return Plan.model_validate_json(path.read_text(encoding="utf-8"))
 
@@ -89,7 +115,7 @@ def main() -> int:
     plan.rounds = max(plan.rounds, args.round_num)
 
     if args.print_fetches and not args.record:
-        sys.stdout.write(
+        _write_stdout(
             json.dumps(
                 {
                     "round": args.round_num,
@@ -111,7 +137,7 @@ def main() -> int:
         evidence = raw if isinstance(raw, list) else []
         added = record_evidence(plan, evidence)
         save_plan(plan, args.plan)
-        sys.stdout.write(
+        _write_stdout(
             json.dumps(
                 {
                     "round": args.round_num,
