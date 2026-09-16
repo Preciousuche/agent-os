@@ -67,10 +67,12 @@ STREAM_WRITERS = (
     "cron-watchers/scripts/watch_http_json.py",
 )
 
-#: Found by ``test_the_covered_list_matches_what_is_actually_in_the_tree``
-#: below rather than by hand — the reason that test exists. Token symbols,
+#: Reported separately (``explore.py`` as #2287) or found by
+#: ``test_the_covered_list_matches_what_is_actually_in_the_tree`` below
+#: rather than by hand — the reason that test exists. Token symbols,
 #: image and video prompts, and rendered card text all carry non-ASCII.
 FOUND_BY_THE_SWEEP = (
+    "history-explorer/scripts/explore.py",
     "deep-research/scripts/iterate.py",
     "deep-research/scripts/plan.py",
     "gmgn-market/scripts/kline_chart.py",
@@ -93,7 +95,6 @@ ALREADY_FIXED = (
 #: Same defect, reported and fixed under their own issues.
 SEPARATE_ISSUES = (
     "xlsx/scripts/inspect_xlsx.py",  # #2264
-    "history-explorer/scripts/explore.py",  # #2287
 )
 
 SAMPLE = "日本語 café 🎉 — em-dash"
