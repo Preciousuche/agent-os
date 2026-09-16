@@ -82,7 +82,18 @@ def main() -> int:
     if not args.plan.is_file():
         print(f"error: plan {args.plan} not found", file=sys.stderr)
         return 2
-    plan = Plan.model_validate_json(args.plan.read_text(encoding="utf-8"))
+    try:
+        plan = Plan.model_validate_json(args.plan.read_text(encoding="utf-8"))
+    except (ValueError, UnicodeDecodeError, OSError) as exc:
+        # ``model_validate_json`` raises ValidationError (a ValueError) both
+        # for malformed JSON and for JSON that does not match the plan schema;
+        # ``read_text`` raises UnicodeDecodeError for a non-UTF-8 file. All
+        # three reached the operator as a traceback.
+        print(
+            f"error: plan {args.plan} is not valid JSON or plan schema: {exc}",
+            file=sys.stderr,
+        )
+        return 2
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(render(plan), encoding="utf-8")
     return 0

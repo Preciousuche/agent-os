@@ -13,8 +13,83 @@ sys.path.insert(0, str(SCRIPT_DIR))
 from plan import DEPTHS, Plan, Source  # type: ignore[import-not-found]  # noqa: E402
 
 
+class InputError(ValueError):
+    """An input file that cannot be used.
+
+    Reported as ``error:`` / exit 2, never as a traceback: the caller passed
+    bad input, the script did not break.
+    """
+
+
 def load_plan(path: Path) -> Plan:
     return Plan.model_validate_json(path.read_text(encoding="utf-8"))
+
+
+def load_plan_file(path: Path) -> Plan:
+    """Read and validate a plan file, or raise :class:`InputError`.
+
+    ``model_validate_json`` raises ``pydantic.ValidationError`` (a
+    ``ValueError``) for malformed JSON *and* for JSON that does not match the
+    plan schema, and ``read_text`` raises ``UnicodeDecodeError`` for a file
+    that is not UTF-8. All three reached the operator as a traceback.
+    """
+    try:
+        return load_plan(path)
+    except (ValueError, UnicodeDecodeError, OSError) as exc:
+        raise InputError(f"plan {path} is not valid JSON or plan schema: {exc}") from exc
+
+
+def load_evidence(path: Path, plan: Plan) -> list[dict[str, object]]:
+    """Read and validate an evidence record file, or raise :class:`InputError`.
+
+    The old ``raw if isinstance(raw, list) else []`` turned every non-list
+    payload into "recorded nothing", saved the plan anyway and reported
+    success, so a round's findings vanished with exit 0. A single evidence
+    object -- the obvious thing to pass -- is the common way to hit it.
+
+    Each item is checked before anything is written, so a bad record leaves
+    the plan exactly as it was. Validating up front rather than skipping as we
+    go is the whole point: ``record_evidence`` silently ``continue``\\ d past an
+    item whose ``subquestion_id`` did not match, which turns a typo into
+    quietly missing evidence, and it accepted an item with no ``url`` at all,
+    which writes a source pointing nowhere.
+    """
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+        raise InputError(f"record {path} is not valid JSON: {exc}") from exc
+    if not isinstance(raw, list):
+        raise InputError(
+            f"record {path} must be a JSON list of evidence items, got {type(raw).__name__}"
+        )
+
+    known = {sq.id for sq in plan.subquestions}
+    items: list[dict[str, object]] = []
+    for index, item in enumerate(raw):
+        if not isinstance(item, dict):
+            raise InputError(
+                f"record entry {index} must be an object with a "
+                f'"subquestion_id" and a "url", got {type(item).__name__}'
+            )
+        subquestion_id = item.get("subquestion_id")
+        if not isinstance(subquestion_id, str) or not subquestion_id.strip():
+            raise InputError(f'record entry {index} is missing a "subquestion_id"')
+        if subquestion_id not in known:
+            raise InputError(
+                f"record entry {index} names unknown subquestion_id "
+                f"{subquestion_id!r}; this plan has {', '.join(sorted(known))}"
+            )
+        url = item.get("url")
+        if not isinstance(url, str) or not url.strip():
+            raise InputError(
+                f'record entry {index} is missing a "url"; an evidence item '
+                "without a source is not evidence"
+            )
+        relevance = item.get("relevance", 0.0)
+        if isinstance(relevance, bool) or not isinstance(relevance, (int, float)):
+            raise InputError(f'record entry {index} has a non-numeric "relevance": {relevance!r}')
+        items.append(item)
+    return items
 
 
 def save_plan(plan: Plan, path: Path) -> None:
@@ -85,7 +160,11 @@ def main() -> int:
     if not args.plan.is_file():
         print(f"error: plan {args.plan} not found", file=sys.stderr)
         return 2
-    plan = load_plan(args.plan)
+    try:
+        plan = load_plan_file(args.plan)
+    except InputError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     plan.rounds = max(plan.rounds, args.round_num)
 
     if args.print_fetches and not args.record:
@@ -107,8 +186,11 @@ def main() -> int:
         if not args.record.is_file():
             print(f"error: record {args.record} not found", file=sys.stderr)
             return 2
-        raw = json.loads(args.record.read_text(encoding="utf-8"))
-        evidence = raw if isinstance(raw, list) else []
+        try:
+            evidence = load_evidence(args.record, plan)
+        except InputError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
         added = record_evidence(plan, evidence)
         save_plan(plan, args.plan)
         sys.stdout.write(

@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Skills: `deep-research` `iterate.py` coerced any non-list evidence record to
+  an empty list, then saved the plan, printed `{"added": 0, ...}` and exited 0
+  — a round's findings vanished while the caller was told it succeeded. A
+  single evidence object, the obvious thing to pass, is the common way to hit
+  it. The same silent drop existed inside a well-formed list: an entry whose
+  `subquestion_id` did not match was skipped without a word, so a typo cost the
+  evidence, and an entry with no `url` was accepted as a source pointing
+  nowhere. Every entry is now validated before anything is written, naming the
+  offending index, and a rejected record leaves the plan byte-for-byte as it
+  was. Malformed JSON, a non-UTF-8 file, and an invalid plan in either
+  `iterate.py` or `compile.py` now exit 2 with a clear message instead of a
+  traceback (#2328).
+
 ## [2026.9.16] - 2026-09-16
 
 ### Fixed
