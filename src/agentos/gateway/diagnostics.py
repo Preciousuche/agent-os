@@ -11,6 +11,7 @@ from agentos.observability.turn_call_log import (
     TURN_CALL_LOG_ENABLED_VALUES,
     TURN_CALL_LOG_ENV,
 )
+from agentos.util.bounded_registry import registry_stats
 
 
 def env_forces_raw_turn_call() -> bool:
@@ -64,9 +65,7 @@ class DiagnosticsState:
     def snapshot(self) -> DiagnosticsSnapshot:
         with self._lock:
             effective_enabled = (
-                self._configured_enabled
-                if self._runtime_enabled is None
-                else self._runtime_enabled
+                self._configured_enabled if self._runtime_enabled is None else self._runtime_enabled
             )
             runtime_raw = bool(effective_enabled and self._runtime_raw)
             env_override = env_forces_raw_turn_call()
@@ -96,6 +95,49 @@ class DiagnosticsState:
             )
 
 
+def registry_snapshot() -> dict[str, Any]:
+    """Live bounded-registry sizes, shaped for an operator-facing payload.
+
+    ``BoundedRegistry`` has always collected this, and ``registry_stats()`` has
+    always exposed it, but nothing read it — so the only way to notice a
+    registry growing was to read the source. That is how every instance of the
+    unbounded-container defect has been found so far (#1084, #1098, #1131,
+    #2399, #2445), none of them from a running deployment.
+
+    ``atCeiling`` is the useful signal rather than raw size: a registry sitting
+    at its ceiling with a rising ``evictions`` count is losing state it will
+    have to rebuild, which is the difference between "sized fine" and
+    "thrashing".
+
+    The underlying table is weakly held, so a registry owned by a torn-down
+    object drops out. That is deliberate — the table that exists to stop leaks
+    must not become one — but it means a missing row means "not live now", not
+    "zero", and the payload says so rather than letting a reader assume.
+    """
+    rows = sorted(registry_stats(), key=lambda row: str(row.get("name", "")))
+    at_ceiling = [
+        str(row.get("name", ""))
+        for row in rows
+        if int(row.get("maxEntries") or 0)
+        and int(row.get("entries") or 0) >= int(row["maxEntries"])
+    ]
+    return {
+        "registries": rows,
+        "summary": {
+            "count": len(rows),
+            "entries": sum(int(row.get("entries") or 0) for row in rows),
+            "evictions": sum(int(row.get("evictions") or 0) for row in rows),
+            "expirations": sum(int(row.get("expirations") or 0) for row in rows),
+            "atCeiling": at_ceiling,
+        },
+        "note": (
+            "Live registries only. A registry owned by a torn-down object is "
+            "dropped from this table, so an absent name means 'not live now', "
+            "not 'zero'."
+        ),
+    }
+
+
 def diagnostics_status_payload(
     state: DiagnosticsState | None,
     config: Any | None,
@@ -119,6 +161,7 @@ def diagnostics_status_payload(
             "source": snapshot.raw_source,
             "env_override": snapshot.env_override,
         },
+        "registries": registry_snapshot(),
         "applies_to": "next_turn",
         "server_debug_changed": False,
         "auth_scope_changed": False,

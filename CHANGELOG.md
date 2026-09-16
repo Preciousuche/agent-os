@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Gateway: `diagnostics.status` now reports live bounded-registry sizes —
+  per-registry name, entry count, ceiling, evictions and expirations, plus a
+  summary that calls out any registry sitting at its ceiling. `BoundedRegistry`
+  has always collected this and `registry_stats()` has always exposed it, but
+  nothing read it, so the only way to notice a registry growing was to read the
+  source — which is how every instance of the unbounded-container defect has
+  been found so far (#1084, #1098, #1131, #2399, #2445) and none from a running
+  deployment. Reported regardless of whether diagnostics mode is enabled: the
+  rows carry no user data, and a leak is what an operator wants to see before
+  turning diagnostics on (#2473).
+
 ## [2026.9.16] - 2026-09-16
 
 ### Fixed
