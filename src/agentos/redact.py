@@ -792,7 +792,10 @@ def _mask_whole_nonreusable(_token: str) -> str:
 def _credential_file_format(path: str | os.PathLike[str] | None) -> str | None:
     if path is None:
         return None
-    return _CREDENTIAL_FILE_FORMATS.get(os.path.basename(os.fspath(path)).lower())
+    # Normalise separators first: a Windows path handed to a POSIX host has
+    # no ``/`` for ``basename`` to split on, as ``_is_source_code_path`` knows.
+    name = os.path.basename(os.fspath(path).replace("\\", "/")).lower()
+    return _CREDENTIAL_FILE_FORMATS.get(name)
 
 
 def _credential_file_formats_in(command: str) -> set[str]:
