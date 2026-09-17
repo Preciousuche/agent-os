@@ -745,7 +745,10 @@ def reads_credential_file(command: str | None) -> bool:
     for token in _command_operands(command):
         if token.startswith("-"):
             continue
-        if _is_credential_file_name(os.path.basename(token)) or _in_credential_dir(token):
+        # ``basename`` on a POSIX host does not split on ``\``; normalise so a
+        # Windows-native operand is judged by its real name.
+        name = os.path.basename(token.replace("\\", "/"))
+        if _is_credential_file_name(name) or _in_credential_dir(token):
             return True
     return False
 
