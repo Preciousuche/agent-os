@@ -100,7 +100,11 @@ def _probed(
 
 ANIMATE = "video-still-animator"
 FIXED_LOCATIONS = [
-    r"C:\home\u\scoop\apps\ffmpeg\current\bin\ffmpeg.exe",
+    # Built with ``os.path.join`` exactly as the scripts build it, because the
+    # separator it inserts is the runner's, not the monkeypatched ``os.name``'s:
+    # on a Linux runner this is ``C:\home\u/scoop/...``, and that is what the
+    # resolver probes there too.
+    os.path.join(r"C:\home\u", "scoop", "apps", "ffmpeg", "current", "bin", "ffmpeg.exe"),
     r"C:\ProgramData\chocolatey\bin\ffmpeg.exe",
     r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
     r"C:\ffmpeg\bin\ffmpeg.exe",
@@ -177,7 +181,7 @@ def test_every_skill_prefers_the_winget_install_when_present(
     winget_bin = (
         r"C:\home\u\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_x\ffmpeg-7-full_build\bin"
     )
-    winget_exe = winget_bin + r"\ffmpeg.exe"
+    winget_exe = os.path.join(winget_bin, "ffmpeg.exe")  # the runner's separator, as the code
 
     def fake_glob(pattern: str, **k) -> list[str]:
         return [winget_exe] if pattern.endswith("ffmpeg.exe") else [winget_bin]
