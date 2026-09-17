@@ -440,11 +440,6 @@ def _tool_content_is_critical(content: Any) -> bool:
 #: critical tool result is ordinary payload and may be compacted freely.
 _CRITICAL_DIAGNOSTIC_KEYS = frozenset({"execution_status", "is_error", "error"})
 
-#: Below this, a JSON-serialized non-string value is left alone: the hard-cap
-#: marker costs more than a genuinely small value, so replacing it would add
-#: characters rather than remove them.
-_NON_STRING_VALUE_VERBATIM_MAX_CHARS = 96
-
 #: Head kept from a non-diagnostic field in a critical tool result.
 _CRITICAL_FIELD_PREVIEW_CHARS = 96
 
@@ -493,16 +488,25 @@ def _critical_field_preview(value: str, *, label: str) -> str:
     return f"{head}[agentos_compacted:{label}:{len(value)}:{digest}]"
 
 
-def _hard_compact_non_diagnostic_value(value: Any, *, label: str) -> Any:
-    """Hard-compact a non-diagnostic non-string rather than passing it through.
+def _compact_non_diagnostic_value(value: Any, *, compact: Callable[[str], str]) -> Any:
+    """Compact a non-diagnostic non-string with the tier's own compactor.
 
     A nested dict or list holding a large string is exactly as able to blow the
-    budget as a bare long string is.
+    budget as a bare long string is, so it cannot pass through verbatim. But it
+    must not collapse to a bare digest at every tier either: the first tier
+    keeps a 900-character head of a string field, and a serialized
+    ``{"rows": [...]}`` sibling deserves the same -- that head is the row
+    preview the model would have had before this preservation existed.
+
+    *compact* is applied to the JSON serialization, so each tier bounds the
+    value exactly as it bounds a string. When the tier leaves the text
+    untouched the value is small enough to keep as its real type.
     """
     serialized = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-    if len(serialized) <= _NON_STRING_VALUE_VERBATIM_MAX_CHARS:
+    compacted = compact(serialized)
+    if compacted == serialized:
         return value
-    return _hard_compact_string(serialized, label=label)
+    return compacted
 
 
 def _critical_tool_string_for_provider(text: str, *, compact: Callable[[str], str]) -> str:
@@ -534,7 +538,7 @@ def _critical_tool_string_for_provider(text: str, *, compact: Callable[[str], st
                 elif isinstance(value, str):
                     preserved[key] = compact(value)
                 else:
-                    preserved[key] = _hard_compact_non_diagnostic_value(value, label=label)
+                    preserved[key] = _compact_non_diagnostic_value(value, compact=compact)
             return json.dumps(preserved, ensure_ascii=False, separators=(",", ":"))
     return compact(text)
 

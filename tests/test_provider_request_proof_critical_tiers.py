@@ -39,6 +39,8 @@ from agentos.provider.request_proof import (
     _compact_recent_tail_payload_once,
     _compact_string,
     _compact_tool_payload_once,
+    _critical_field_preview,
+    _critical_tool_content_for_provider,
     _critical_tool_message_content,
     _effective_proof_budget,
     _emergency_compact_current_turn_payload_once,
@@ -421,3 +423,155 @@ def test_messages_without_a_tool_role_are_untouched_by_the_map() -> None:
 def test_a_payload_with_no_messages_is_safe() -> None:
     assert _critical_tool_message_content({"model": "m"}) == {}
     assert _critical_tool_message_content({"model": "m", "messages": "nonsense"}) == {}
+
+
+# ── a nested non-string sibling keeps the tier's preview, not a bare digest ──
+#
+# Raised in review: ``_hard_compact_non_diagnostic_value`` hard-compacted a
+# nested dict or list at *every* tier. At the first tier that turned the row
+# sample main would have kept (900 head + 200 tail) into a 63-character digest
+# -- the model lost the preview it used to have. The tier's own compactor is
+# now applied to the serialized value, so each tier bounds a nested sibling
+# exactly as it bounds a string.
+
+
+ROWS = [{"id": index, "name": f"row-{index}", "ok": index % 7 != 0} for index in range(120)]
+
+
+def nested_result() -> str:
+    return json.dumps({"data": {"rows": ROWS}, "execution_status": FAILURE}, ensure_ascii=False)
+
+
+def data_field_of(content: str) -> str:
+    parsed = json.loads(content)
+    return parsed["data"] if isinstance(parsed["data"], str) else json.dumps(parsed["data"])
+
+
+def test_at_tier_one_a_nested_sibling_keeps_the_row_preview() -> None:
+    """The review's probe: tier 1 must keep the head of ``data``, not a digest."""
+    content = _critical_tool_content_for_provider(nested_result(), compact=_compact_string)
+
+    data = data_field_of(content)
+    assert data.startswith('{"rows":[{"id":0,"name":"row-0"')
+    assert '"id":10,' in data, "the 900-character head should reach well into the rows"
+    assert "[provider_request_compacted: omitted" in data
+    assert not data.startswith("[agentos_compacted:")
+    assert json.loads(content)["execution_status"] == FAILURE
+
+
+def test_at_tier_one_the_preview_is_the_same_size_a_string_field_would_get() -> None:
+    """A serialized dict is compacted exactly as a string of the same length."""
+    serialized = json.dumps({"rows": ROWS}, ensure_ascii=False, separators=(",", ":"))
+
+    content = _critical_tool_content_for_provider(nested_result(), compact=_compact_string)
+
+    assert data_field_of(content) == _compact_string(serialized)
+
+
+def test_at_tier_three_a_nested_sibling_keeps_the_emergency_head() -> None:
+    content = _critical_tool_content_for_provider(
+        nested_result(),
+        compact=lambda value: _emergency_compact_string(value, label="tool_result"),
+    )
+
+    data = data_field_of(content)
+    assert data.startswith('{"rows":[{"id":0,')
+    assert "emergency_compacted" in data
+    assert not data.startswith("[agentos_compacted:")
+
+
+def test_at_the_final_tier_a_nested_sibling_keeps_the_short_head() -> None:
+    """The final tier keeps the same 96-character head it keeps for strings --
+    still not a bare digest, because the head is what a model can read."""
+    content = _critical_tool_content_for_provider(
+        nested_result(),
+        compact=lambda value: _critical_field_preview(value, label="critical_field"),
+    )
+
+    data = data_field_of(content)
+    assert data.startswith('{"rows":[{"id":0,')
+    assert "[agentos_compacted:critical_field:" in data
+    assert len(data) < 200
+
+
+def test_the_preview_grows_shorter_tier_by_tier_and_never_loses_the_head() -> None:
+    """The ordering that makes the chain a chain: each tier is at least as
+    tight as the one before it, and none of them drops the head."""
+    tiers = (
+        _compact_string,
+        lambda value: _emergency_compact_string(value, label="tool_result"),
+        lambda value: _critical_field_preview(value, label="critical_field"),
+    )
+
+    sizes = [
+        len(data_field_of(_critical_tool_content_for_provider(nested_result(), compact=tier)))
+        for tier in tiers
+    ]
+
+    assert sizes == sorted(sizes, reverse=True), sizes
+    for tier in tiers:
+        assert data_field_of(
+            _critical_tool_content_for_provider(nested_result(), compact=tier)
+        ).startswith('{"rows":[{"id":0,')
+
+
+def test_a_small_nested_sibling_keeps_its_real_type_at_every_tier() -> None:
+    """When the tier would not touch the serialization, the value stays a
+    dict rather than becoming a JSON string of itself."""
+    small = json.dumps(
+        {"data": {"rows": ROWS[:2]}, "execution_status": FAILURE}, ensure_ascii=False
+    )
+    for tier in (
+        _compact_string,
+        lambda value: _emergency_compact_string(value, label="tool_result"),
+        lambda value: _critical_field_preview(value, label="critical_field"),
+    ):
+        content = _critical_tool_content_for_provider(small, compact=tier)
+
+        assert json.loads(content)["data"] == {"rows": ROWS[:2]}
+
+
+def test_a_nested_list_sibling_is_treated_like_a_nested_dict() -> None:
+    listed = json.dumps({"items": ROWS, "execution_status": FAILURE}, ensure_ascii=False)
+
+    content = _critical_tool_content_for_provider(listed, compact=_compact_string)
+
+    items = json.loads(content)["items"]
+    assert isinstance(items, str)
+    assert items.startswith('[{"id":0,"name":"row-0"')
+    assert "[provider_request_compacted: omitted" in items
+
+
+def test_end_to_end_the_first_tier_keeps_the_row_preview() -> None:
+    """The review's exact reproduction through the public entry point: a
+    budget the first tier satisfies must leave the rows readable."""
+    payload = {
+        "model": "m",
+        "messages": [
+            {"role": "user", "content": "u" * 300},
+            {
+                "role": "assistant",
+                "content": "a" * 300,
+                "tool_calls": [
+                    {
+                        "id": "t1",
+                        "type": "function",
+                        "function": {"name": "run", "arguments": json.dumps({"cmd": "y" * 300})},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "t1", "content": nested_result()},
+            {"role": "user", "content": "next"},
+        ],
+    }
+
+    compacted, proof = prove_or_compact_provider_payload(
+        payload, projection_adapter="openai", proof_budget=3000
+    )
+
+    assert proof is not None and proof["fits"] is True
+    content = tool_content_of(compacted)
+    data = data_field_of(content)
+    assert data.startswith('{"rows":[{"id":0,"name":"row-0"')
+    assert not data.startswith("[agentos_compacted:")
+    assert json.loads(content)["execution_status"] == FAILURE

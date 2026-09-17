@@ -22,8 +22,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   the emergency tier, and only a leading one reached the hard cap. Criticality
   is now decided once, on the original content, before any tier runs, and that
   verdict is carried into every tier that rewrites tool content. Preserved
-  results keep each diagnostic field bounded rather than verbatim, and if the
-  preserved form no longer fits the budget the whole chain is rebuilt without
+  results keep each diagnostic field bounded rather than verbatim, every
+  other field -- nested or not -- is bounded by the tier's own compactor
+  rather than collapsed to a digest, and if the preserved form no longer
+  fits the budget the whole chain is rebuilt without
   preservation, so this can never turn a request that previously succeeded
   into `ProviderRequestBudgetExceededError` (#2363).
 
