@@ -18,6 +18,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- Tools: `apply_patch` applied an indented patch block -- one nested in a
+  Markdown list, a blockquote or an indented code block -- as "no changes":
+  the markers were found but every directive and diff prefix was matched at
+  column zero, so the parser recognised nothing and reported success with
+  the workspace untouched. The block is now dedented by the indentation its
+  directive lines share, so the content's own indentation is kept, a body
+  indented deeper than its markers still applies, and a malformed line
+  indented less than the directives is reported rather than silently
+  dropping every operation (#2799).
 - WebUI chat: "Move to project" and "Rename session" on a brand-new chat
   (Cmd+Shift+O / `/new`, before the first message) failed with "Session not
   found". The WebUI mints the session key client-side and the row only

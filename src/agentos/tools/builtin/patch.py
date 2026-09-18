@@ -109,13 +109,57 @@ def _marker_span(lines: list[str]) -> tuple[int, int]:
     return start_idx, end_idx
 
 
+def _block_indent(body: list[str]) -> str:
+    """The indentation the patch block itself carries, as text.
+
+    A patch nested in a Markdown list, a blockquote or an indented code block
+    arrives with every line pushed right. The parser matches directives and
+    diff prefixes at column zero, so an indented block parsed as *nothing* --
+    no directive recognised, no operation, ``Applied patch: no changes`` --
+    while the workspace stayed untouched (#2799).
+
+    The block's indentation is what its **directive** lines share, not what
+    every line shares: a content line that is somehow indented *less* than the
+    directives is malformed, and letting it shrink the prefix would leave the
+    directives indented and drop every operation silently again. Measured on
+    the directives, that line is instead left as it is and the block parser
+    reports it. Only the leading-whitespace *prefix* common to the directives
+    counts, so a block whose body sits deeper than its ``*** Begin Patch``
+    line still dedents, and one whose body is flush under a drifted marker
+    dedents by nothing.
+    """
+    directive_indents = [
+        _leading_ws(line) for line in body if line.lstrip().startswith("*** ") and line.strip()
+    ]
+    if not directive_indents:
+        return ""
+    prefix = directive_indents[0]
+    for indent in directive_indents[1:]:
+        while not indent.startswith(prefix):
+            prefix = prefix[:-1]
+    return prefix
+
+
+def _dedent_block(body: list[str]) -> list[str]:
+    """Strip the block's indentation from every line that carries it.
+
+    A line that does not -- a blank line trimmed shorter than the indent, or a
+    malformed line -- is left exactly as written, never ``lstrip()``-ed: a hunk
+    context line's leading space *is* its diff prefix.
+    """
+    indent = _block_indent(body)
+    if not indent:
+        return body
+    return [line[len(indent) :] if line.startswith(indent) else line for line in body]
+
+
 def _parse_patch(patch_text: str) -> list[PatchOp]:
     """Parse patch text into a list of PatchOp objects."""
     lines = patch_text.splitlines()
 
-    # Trim to content between markers
+    # Trim to content between markers, then to the block's own column
     start_idx, end_idx = _marker_span(lines)
-    body = lines[start_idx + 1 : end_idx]
+    body = _dedent_block(lines[start_idx + 1 : end_idx])
 
     ops: list[PatchOp] = []
     i = 0
