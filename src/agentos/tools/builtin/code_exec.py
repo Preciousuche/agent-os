@@ -44,6 +44,22 @@ _PREFIX_CMD_PATTERN: str = (
 _IN_QUOTE_CMD_PREFIX: str = r"(?:" + _PREFIX_CMD_PATTERN + r"\s+)*"
 _COMMAND_PREFIX: str = r"(?:^|[;&|])\s*" + _IN_QUOTE_CMD_PREFIX
 
+#: Every command name that deletes, in one place. POSIX ``rm``/``rmdir``,
+#: cmd's ``del``/``erase``/``rd``, and PowerShell's ``Remove-Item`` with all
+#: three of its built-in aliases -- ``rm``, ``rd`` and ``ri``. The same list
+#: was written out four times below and ``ri`` was missing from all four
+#: while ``shell_policy`` blocked it, so a deletion routed through
+#: ``os.system("powershell -c ri ...")`` ran without approval (#2776). The
+#: four regexes and the argv check are now built from this set, so the
+#: next alias lands everywhere at once.
+_SHELL_DELETE_CMDS: frozenset[str] = frozenset(
+    {"rm", "rmdir", "del", "erase", "rd", "ri", "remove-item"}
+)
+#: ``Remove-Item`` is matched by its cmdlet spelling, case-insensitively.
+_DELETE_CMD_ALTERNATION: str = (
+    r"(?:" + "|".join(sorted(re.escape(c) for c in _SHELL_DELETE_CMDS)) + r")\b"
+)
+
 _DESTRUCTIVE_PY_PATTERNS: list[tuple[str, str]] = [
     (r"\bos\.remove\s*\(", "os.remove()"),
     (r"\bos\.unlink\s*\(", "os.unlink()"),
@@ -53,21 +69,17 @@ _DESTRUCTIVE_PY_PATTERNS: list[tuple[str, str]] = [
     (r"\.unlink\s*\(", "Path.unlink()"),
     (r"\.rmdir\s*\(", "Path.rmdir()"),
     (
-        r"(?i)\bos\.system\s*\(\s*['\"]"
-        + _IN_QUOTE_CMD_PREFIX
-        + r"(?:rm|rmdir|del|erase|rd|Remove-Item)\b",
+        r"(?i)\bos\.system\s*\(\s*['\"]" + _IN_QUOTE_CMD_PREFIX + _DELETE_CMD_ALTERNATION,
         "os.system with delete command",
     ),
     (
-        r"(?i)\bos\.popen\s*\(\s*['\"]"
-        + _IN_QUOTE_CMD_PREFIX
-        + r"(?:rm|rmdir|del|erase|rd|Remove-Item)\b",
+        r"(?i)\bos\.popen\s*\(\s*['\"]" + _IN_QUOTE_CMD_PREFIX + _DELETE_CMD_ALTERNATION,
         "os.popen with delete command",
     ),
     (
         r"(?i)\bsubprocess\.(?:run|call|Popen|check_output|check_call)\s*\(\s*(?:[\[\(]\s*['\"]|['\"])"
         + _IN_QUOTE_CMD_PREFIX
-        + r"(?:rm|rmdir|del|erase|rd|Remove-Item)\b",
+        + _DELETE_CMD_ALTERNATION,
         "subprocess invoking delete command",
     ),
 ]
@@ -81,7 +93,6 @@ _ALL_DESTRUCTIVE_NAMES: frozenset[str] = frozenset(
 _SUBPROCESS_CALL_NAMES: frozenset[str] = frozenset(
     {"run", "call", "Popen", "check_output", "check_call"}
 )
-_SHELL_DELETE_CMDS: frozenset[str] = frozenset({"rm", "rmdir", "del", "erase", "rd", "remove-item"})
 _PREFIX_COMMANDS: frozenset[str] = frozenset(
     {
         "sudo",
@@ -139,7 +150,7 @@ _PREFIX_FLAGS_WITH_ARG: dict[str, frozenset[str]] = {
     "xargs": frozenset({"-I", "-n", "-L", "-P", "-s", "-d", "-a", "-E"}),
 }
 _SHELL_DELETE_RE: re.Pattern[str] = re.compile(
-    _COMMAND_PREFIX + r"(?:rm|rmdir|del|erase|rd|Remove-Item)\b", re.IGNORECASE
+    _COMMAND_PREFIX + _DELETE_CMD_ALTERNATION, re.IGNORECASE
 )
 
 

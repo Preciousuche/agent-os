@@ -18,6 +18,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- Tools (code_exec): the destructive-shell inspection missed `ri`,
+  PowerShell's third built-in alias for `Remove-Item`, which `shell_policy`
+  already blocks -- so a deletion routed through `os.system("powershell -c
+  ri ...")` or `subprocess.run(["ri", ...])` ran without approval. The
+  delete-command alternation was written out four times and `ri` was absent
+  from all four; it is now built once from `_SHELL_DELETE_CMDS`, and a test
+  asserts every alias `shell_policy` anchors is known here too (#2776).
 - WebUI chat: "Move to project" and "Rename session" on a brand-new chat
   (Cmd+Shift+O / `/new`, before the first message) failed with "Session not
   found". The WebUI mints the session key client-side and the row only
