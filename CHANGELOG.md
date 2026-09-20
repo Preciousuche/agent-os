@@ -7,6 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Fixed
+- Channels: the batch-fallback reply after a streaming turn no longer leaves a
+  stale `![chart](chart.png)` reference in the text for an artifact the stream
+  relay already delivered as a native file; the text is stripped against every
+  artifact it names, and the already-delivered filter only decides what is
+  (re-)sent as a file (#2940)
 - Slack: clicking Approve/Deny on a tool-call approval prompt that was posted
   as a top-level message (not already inside a thread) made the agent's reply
   post unthreaded instead of anchoring under the prompt it answered.

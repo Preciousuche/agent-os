@@ -2431,14 +2431,20 @@ async def _deliver_runtime_channel_reply(
 
     if content:
         content, artifacts = _split_assistant_artifact_content(content)
+        content = _strip_artifact_markers_from_channel_text(content)
+        # Strip against every artifact the text names, before the stream-
+        # delivered ones are dropped from the list below: an inline reference
+        # to an artifact the relay already sent as a native file is exactly as
+        # stale as one for an artifact about to be sent here. Filtering first
+        # took those names out of the strip set and left `![chart](chart.png)`
+        # in the fallback text beside the real attachment (#2940).
+        content = _strip_delivered_artifact_image_references(content, artifacts)
         if stream_relay is not None and stream_relay.delivered_artifact_keys:
             artifacts = [
                 artifact
                 for artifact in artifacts
                 if _artifact_delivery_key(artifact) not in stream_relay.delivered_artifact_keys
             ]
-        content = _strip_artifact_markers_from_channel_text(content)
-        content = _strip_delivered_artifact_image_references(content, artifacts)
         if _can_deliver_channel_files(channel):
             if content:
                 await channel.send(
