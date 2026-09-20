@@ -1240,3 +1240,60 @@ def cron_output(
             console.print(output, markup=False, highlight=False)
         else:
             console.print("[dim](no output)[/dim]")
+
+
+@cron_app.command("preview")
+def cron_preview(
+    expression: Annotated[
+        str | None, typer.Option("--expression", help="Cron expression")
+    ] = None,
+    cron: Annotated[
+        str | None, typer.Option("--cron", help="Cron expression schedule")
+    ] = None,
+    every: Annotated[
+        str | None, typer.Option("--every", help="Fixed interval, e.g. 30s, 5m, 1h")
+    ] = None,
+    at: Annotated[
+        str | None, typer.Option("--at", help="One-time ISO-8601 time with timezone")
+    ] = None,
+    tz: str | None = typer.Option(
+        None, "--tz", help="IANA timezone for cron expressions (e.g. Asia/Shanghai)"
+    ),
+    count: int = typer.Option(5, "--count", "-n", help="How many upcoming runs to show"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+) -> None:
+    """Show when a schedule will fire, before creating a job with it.
+
+    The gateway answers with its own next-run search, so what this prints is
+    what `cron add` with the same schedule would produce -- field order,
+    timezone, and the day-of-month/day-of-week rule included.
+    """
+    if count < 1:
+        raise typer.BadParameter("--count must be at least 1")
+    params = _build_schedule_param(expression=expression, cron=cron, every=every, at=at, tz=tz)
+    if "expression" in params and tz:
+        params["tz"] = tz
+    params["count"] = count
+
+    async def _run(client):
+        return await client.call("cron.preview", params)
+
+    payload = run_gateway_sync(_run, json_output=json_output)
+    if json_output:
+        print_json(payload)
+        return
+    schedule = payload.get("schedule", {}) if isinstance(payload, dict) else {}
+    rows = payload.get("runs", []) if isinstance(payload, dict) else []
+    value = schedule.get("value", "")
+    zone_name = schedule.get("tz", "")
+    if not rows:
+        emit_error(
+            f"`{value}` never fires within the next four years; check the day and month fields",
+            json_output=False,
+        )
+        raise typer.Exit(2)
+    label = f"{schedule.get('kind', '')} {value}" + (f" ({zone_name})" if zone_name else "")
+    console.print(f"Next {len(rows)} run(s) for {label}:")
+    for row in rows:
+        suffix = f"   {row['local']}" if zone_name else ""
+        console.print(f"  {row['utc']} UTC  ({row['weekday']}){suffix}")

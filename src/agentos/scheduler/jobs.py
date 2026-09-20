@@ -241,6 +241,40 @@ def _next_run(job: CronJob, after: datetime) -> datetime:
     return instant + timedelta(seconds=job.jitter_seconds)
 
 
+def upcoming_runs(job: CronJob, after: datetime, count: int) -> list[datetime]:
+    """The next *count* instants (UTC) at which *job* fires after *after*.
+
+    What ``_next_run`` computes, repeated, without the per-job jitter: a
+    preview describes the schedule, and jitter is applied when a run is
+    actually placed. A one-shot yields its single instant, or nothing once it
+    has passed; a schedule that never fires within the horizon yields what it
+    has (possibly nothing) rather than raising.
+    """
+    if count <= 0:
+        return []
+    if job.schedule_kind == ScheduleKind.AT:
+        at = datetime.fromisoformat(job.cron_expr)
+        return [at.astimezone(UTC)] if at > after else []
+    if job.schedule_kind == ScheduleKind.EVERY and job.cron_expr.isdigit():
+        # The interval path of _next_run applies no jitter, so it can be used
+        # as is; every later fire is one interval on.
+        interval = timedelta(seconds=int(job.cron_expr))
+        first = _next_run(job, after)
+        return [first + interval * step for step in range(count)]
+    expr = parse_cron(job.cron_expr)
+    tz_name = (job.tz or "").strip()
+    tz = ZoneInfo(tz_name) if tz_name else None
+    runs: list[datetime] = []
+    cursor = after
+    while len(runs) < count:
+        instant = _next_cron_instant(expr, cursor, tz)
+        if instant is None:
+            break
+        runs.append(instant)
+        cursor = instant
+    return runs
+
+
 #: How far ahead a schedule is searched before it is declared to never fire.
 #: Four years covers a leap-day job; it was also the horizon of the old
 #: minute-by-minute scan, so what is refused does not change.

@@ -1074,3 +1074,65 @@ async def test_update_delivery_rejects_an_unusable_recipient(tmp_path: Path) -> 
     assert "session key" in str(excinfo.value).lower()
     assert stored is not None and stored.delivery is not None
     assert stored.delivery.channel_id == "-100999"
+
+
+# ---------------------------------------------------------------------------
+# next_runs (#3101)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_carries_the_next_fires_in_the_jobs_own_timezone(tmp_path: Path) -> None:
+    """The model translated "every morning at nine, Bangkok time" into a
+    schedule; the record hands back the next three fires so it can read them
+    to the user and a wrong translation is caught before the first miss."""
+    store, sched = await _open(tmp_path)
+    try:
+        job = await _seed_agent_turn(sched)
+        payload = await _call(sched, action="get", job_id=job.id)
+    finally:
+        await store.close()
+
+    runs = payload["job"]["next_runs"]
+    assert len(runs) == 3
+    assert all(run.endswith("T09:00+07:00") for run in runs), runs
+    assert runs == sorted(runs)
+
+
+@pytest.mark.asyncio
+async def test_add_returns_the_next_fires_with_the_new_job(tmp_path: Path) -> None:
+    store, sched = await _open(tmp_path)
+    try:
+        payload = await _call(
+            sched,
+            _cli_ctx(),
+            action="add",
+            schedule={"kind": "cron", "expr": "0 9 * * 1-5", "tz": "Asia/Shanghai"},
+            task="stand-up notes",
+            job_kind="reminder",
+            session_target="isolated",
+        )
+    finally:
+        await store.close()
+
+    runs = payload["next_runs"]
+    assert len(runs) == 3
+    assert all(run.endswith("T09:00+08:00") for run in runs), runs
+
+
+@pytest.mark.asyncio
+async def test_next_runs_is_empty_rather_than_failing_for_a_one_shot_that_passed(
+    tmp_path: Path,
+) -> None:
+    store, sched = await _open(tmp_path)
+    try:
+        job = await _seed_agent_turn(sched)
+        # Rewind the persisted one-shot below the guard that refuses past times.
+        job.schedule_kind = ScheduleKind.AT
+        job.cron_expr = "2020-01-01T00:00:00+00:00"
+        await store.save(job)
+        payload = await _call(sched, action="get", job_id=job.id)
+    finally:
+        await store.close()
+
+    assert payload["job"]["next_runs"] == []

@@ -35,6 +35,7 @@ from agentos.scheduler.scripts import (
     validate_script_path,
 )
 from agentos.scheduler.types import (
+    CronJob,
     DeliveryConfig,
     DeliveryMode,
     ReplyTargetSnapshot,
@@ -295,6 +296,26 @@ def _delivery_targets_caller(delivery: Any, ctx: Any) -> bool:
     return True
 
 
+_NEXT_RUNS_PREVIEW = 3
+
+
+def _cron_next_runs(job: Any) -> list[str]:
+    """ISO timestamps of the job's next fires, in its own timezone."""
+    from datetime import UTC, datetime
+    from zoneinfo import ZoneInfo
+
+    from agentos.scheduler.jobs import upcoming_runs
+
+    if not isinstance(job, CronJob):
+        return []
+    try:
+        runs = upcoming_runs(job, datetime.now(UTC), _NEXT_RUNS_PREVIEW)
+        zone = ZoneInfo(job.tz) if (job.tz or "").strip() else UTC
+    except Exception:  # noqa: BLE001 - a preview must never fail the record it decorates
+        return []
+    return [run.astimezone(zone).isoformat(timespec="minutes") for run in runs]
+
+
 def _cron_job_view(job: Any) -> dict[str, Any]:
     """Every setting the model needs to describe a job or derive one from it.
 
@@ -333,6 +354,11 @@ def _cron_job_view(job: Any) -> dict[str, Any]:
         "timeout_seconds": float(getattr(job, "timeout_seconds", 600.0) or 600.0),
         "created_from": str(getattr(job, "creator_session_key", "") or ""),
         "next_run_at": next_run_at.isoformat() if next_run_at is not None else "",
+        # The next few fires in the job's own zone, so the model can read the
+        # schedule it just translated back to the user ("so that's Mon 09:00,
+        # Tue 09:00, ...") and a wrong translation is caught now, not at the
+        # first miss (#3101).
+        "next_runs": _cron_next_runs(job),
         "last_run_at": last_run_at.isoformat() if last_run_at is not None else "",
         "elevated": (
             cron_tool_policy_elevated(job.tool_policy)
@@ -1451,6 +1477,11 @@ async def cron(
             "session_target": session_target,
             "wake_mode": wake_mode,
             "tz": effective_tz,
+            # The next fires, in the job's zone: what the schedule the model
+            # just wrote actually means, so it can be read back to the user
+            # and a wrong translation caught here rather than at the first
+            # miss (#3101).
+            "next_runs": _cron_next_runs(job),
             # Where this will actually announce. Reported for every add, not
             # just overridden ones, so "post it to the ops group" can be
             # confirmed rather than assumed.

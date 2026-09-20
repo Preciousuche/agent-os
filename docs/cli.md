@@ -771,7 +771,19 @@ agentos cron add --every 1h --text "Summarize important updates" --name hourly-s
 agentos cron status <job-id>
 agentos cron runs <job-id>
 agentos cron output <job-id>
+agentos cron preview --cron "0 9 * * 1-5" --tz Asia/Shanghai -n 5
 ```
+
+`agentos cron preview` prints when a schedule will fire before you create a
+job with it. It takes the same `--cron` / `--expression` / `--every` / `--at`
+and `--tz` options as `cron add`, asks the gateway (`cron.preview`) to run the
+scheduler's own next-run search on it, and lists the next `-n` fires in UTC
+and, for a `--tz` schedule, in that zone with the weekday — so the field order, the
+timezone and the day-of-month/day-of-week rule (`0 0 1,15 * 5` is the 1st,
+the 15th, *or* any Friday) can be checked by eye. A schedule that never
+fires (`0 0 31 4 *`) is reported as such. `--json` emits the same list. The
+`cron` tool returns the same next fires as `next_runs` on `add`, `get` and
+`update`, so an agent can read a schedule it translated back to the user.
 
 `--job-kind` picks what fires: `reminder` (delivers `--text` verbatim, no LLM),
 `script` (runs a file, no LLM), `agent_turn` (the agent runs `--text` as a

@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+- `agentos cron preview --cron … [--tz …] [-n N]` (also `--every` / `--at`)
+  prints when a schedule will fire before a job is created with it — the
+  next N runs in UTC and, for a zoned schedule, in that zone with the weekday
+  — through a new `cron.preview` RPC that runs the scheduler's own next-run
+  search. The `cron` tool returns the same next three fires as `next_runs` on
+  `add`, `get` and `update`, so an agent can read a schedule it translated
+  back to the user (#3101)
+
 ### Fixed
 - Scheduler: a cron job's next fire time is found by jumping a field at a time
   instead of testing every minute for up to four years. A yearly schedule

@@ -766,6 +766,58 @@ async def _handle_cron_status(params: dict | None, ctx: RpcContext) -> dict[str,
     return _job_to_wire(job, config=ctx.config)
 
 
+_PREVIEW_DEFAULT_COUNT = 5
+_PREVIEW_MAX_COUNT = 50
+
+
+@_d.method("cron.preview")
+async def _handle_cron_preview(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
+    """The next fires of a schedule, without creating a job (#3101).
+
+    Takes the same ``schedule`` object (or legacy ``expression`` + ``tz``) as
+    ``cron.add`` and runs the scheduler's own next-run search on it, so the
+    answer is what the job would do. Each run is reported as a UTC instant and
+    as the wall time in the schedule's zone, with the weekday, which is how a
+    reader checks that ``0 9 * * 1-5`` in ``Asia/Shanghai`` means what they
+    think. A schedule that never fires answers with no runs.
+    """
+    from datetime import UTC, datetime
+    from zoneinfo import ZoneInfo
+
+    from agentos.scheduler.jobs import upcoming_runs
+    from agentos.scheduler.types import CronJob
+
+    if not isinstance(params, dict):
+        raise ValueError("params required: schedule (object) or expression (string)")
+    schedule_kind, schedule_value, schedule_tz = _schedule_from_params(params)
+    raw_count = params.get("count", _PREVIEW_DEFAULT_COUNT)
+    if isinstance(raw_count, bool) or not isinstance(raw_count, int) or raw_count < 1:
+        raise ValueError("params.count must be a positive integer")
+    count = min(raw_count, _PREVIEW_MAX_COUNT)
+
+    now = datetime.now(UTC)
+    job = CronJob(
+        name="preview",
+        schedule_kind=schedule_kind,
+        cron_expr=schedule_value,
+        tz=schedule_tz,
+        anchor_at=now if schedule_kind == ScheduleKind.EVERY else None,
+    )
+    zone = ZoneInfo(schedule_tz) if schedule_tz else UTC
+    runs = [
+        {
+            "utc": run.astimezone(UTC).isoformat(timespec="minutes"),
+            "local": run.astimezone(zone).isoformat(timespec="minutes"),
+            "weekday": run.astimezone(zone).strftime("%a"),
+        }
+        for run in upcoming_runs(job, now, count)
+    ]
+    return {
+        "schedule": {"kind": schedule_kind.value, "value": schedule_value, "tz": schedule_tz},
+        "runs": runs,
+    }
+
+
 @_d.method("cron.add")
 async def _handle_cron_add(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
     if not isinstance(params, dict):
