@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from .parser import parse_cron
+from .parser import CronExpression, parse_cron
 from .persistence import JobStore
 from .types import (
     CronJob,
@@ -231,17 +231,83 @@ def _next_run(job: CronJob, after: datetime) -> datetime:
             return anchor + timedelta(seconds=steps * interval_seconds)
         return after + timedelta(seconds=interval_seconds)
 
-    # Standard cron: scan forward minute-by-minute
+    # Standard cron: jump field by field to the next matching wall time
     expr = parse_cron(job.cron_expr)
     tz_name = (job.tz or "").strip()
     tz = ZoneInfo(tz_name) if tz_name else None
-    candidate = after.replace(second=0, microsecond=0) + timedelta(minutes=1)
-    for _ in range(2_102_400):
-        wall = candidate.astimezone(tz) if tz is not None else candidate
-        if expr.matches(wall):
-            return candidate + timedelta(seconds=job.jitter_seconds)
-        candidate += timedelta(minutes=1)
-    raise ValueError(f"No valid next run found for expression '{job.cron_expr}'")
+    instant = _next_cron_instant(expr, after, tz)
+    if instant is None:
+        raise ValueError(f"No valid next run found for expression '{job.cron_expr}'")
+    return instant + timedelta(seconds=job.jitter_seconds)
+
+
+#: How far ahead a schedule is searched before it is declared to never fire.
+#: Four years covers a leap-day job; it was also the horizon of the old
+#: minute-by-minute scan, so what is refused does not change.
+_NEXT_RUN_HORIZON_YEARS = 4
+
+
+def _next_cron_instant(
+    expr: CronExpression, after: datetime, tz: ZoneInfo | None
+) -> datetime | None:
+    """The first UTC instant strictly after *after* at which *expr* fires.
+
+    The search works on the wall clock in *tz* and jumps a whole field at a
+    time: a non-matching month goes to the first day of the next matching
+    month, a non-matching day to the next midnight, a non-matching hour or
+    minute to the next matching one. Stepping one minute at a time instead
+    cost O(minutes until the next fire) -- about a second for a yearly
+    schedule and four for a leap-day one -- inside the synchronous add/
+    reschedule path (#3099). The loop here runs a few dozen times at most.
+
+    Each matching wall time is mapped back to an instant through the zone,
+    which is what decides the daylight-saving cases: a wall time inside a
+    spring-forward gap does not exist and is skipped, and a wall time that
+    occurs twice on a fall-back night fires on its first occurrence.
+    """
+    zone = tz or UTC
+    wall = (after.astimezone(zone) + timedelta(minutes=1)).replace(
+        second=0, microsecond=0, tzinfo=None
+    )
+    months = sorted(expr.month.values)
+    hours = sorted(expr.hour.values)
+    minutes = sorted(expr.minute.values)
+    horizon_year = wall.year + _NEXT_RUN_HORIZON_YEARS
+
+    while wall.year <= horizon_year:
+        if wall.month not in expr.month.values:
+            later = [m for m in months if m > wall.month]
+            if later:
+                wall = wall.replace(month=later[0], day=1, hour=0, minute=0)
+            else:
+                wall = wall.replace(year=wall.year + 1, month=months[0], day=1, hour=0, minute=0)
+            continue
+        if not expr.matches_day(wall):
+            wall = wall.replace(hour=0, minute=0) + timedelta(days=1)
+            continue
+        if wall.hour not in expr.hour.values:
+            later = [h for h in hours if h > wall.hour]
+            if later:
+                wall = wall.replace(hour=later[0], minute=0)
+            else:
+                wall = wall.replace(hour=0, minute=0) + timedelta(days=1)
+            continue
+        if wall.minute not in expr.minute.values:
+            later = [m for m in minutes if m > wall.minute]
+            if later:
+                wall = wall.replace(minute=later[0])
+            else:
+                wall = wall.replace(minute=0) + timedelta(hours=1)
+            continue
+
+        instant = wall.replace(tzinfo=zone).astimezone(UTC)
+        # A wall time in a spring-forward gap maps to an instant whose own wall
+        # time is different; it never happens on the clock, so it never fires.
+        if instant.astimezone(zone).replace(tzinfo=None) != wall or instant <= after:
+            wall += timedelta(minutes=1)
+            continue
+        return instant
+    return None
 
 
 async def apply_result(job: CronJob, execution: JobExecution, store: JobStore) -> None:

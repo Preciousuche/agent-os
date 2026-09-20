@@ -95,7 +95,14 @@ class CronExpression:
             and self.month.matches(dt.month)
         ):
             return False
+        return self.matches_day(dt)
 
+    def matches_day(self, dt: datetime) -> bool:
+        """Whether *dt*'s calendar day satisfies the day-of-month/day-of-week rule.
+
+        Split out of :meth:`matches` so the next-run search can decide a whole
+        day at once, against the same rule.
+        """
         day_of_month_ok = self.day_of_month.matches(dt.day)
         day_of_week_ok = self.day_of_week.matches((dt.weekday() + 1) % 7)  # Mon=0 → Sun=0
 

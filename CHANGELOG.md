@@ -7,6 +7,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Fixed
+- Scheduler: a cron job's next fire time is found by jumping a field at a time
+  instead of testing every minute for up to four years. A yearly schedule
+  cost ~1 s (1.4 s with a timezone), a leap-day one ~4 s and an impossible
+  date ~4 s before failing — on the gateway's event loop at every add, after
+  every run and for every job at boot. Results are unchanged, including the
+  daylight-saving edges (#3099)
 - Slack: clicking Approve/Deny on a tool-call approval prompt that was posted
   as a top-level message (not already inside a thread) made the agent's reply
   post unthreaded instead of anchoring under the prompt it answered.
