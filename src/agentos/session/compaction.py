@@ -524,15 +524,6 @@ def _merge_summaries(summaries: list[str]) -> str:
     return "\n".join(merged_lines)
 
 
-def _is_assistant_tool_call_entry(entry: dict[str, Any]) -> bool:
-    if entry.get("role") != "assistant":
-        return False
-    if entry.get("tool_calls"):
-        return True
-    content = str(entry.get("content") or "")
-    return "[tool_call:" in content or "[Used tool:" in content
-
-
 def _is_tool_result_entry(entry: dict[str, Any] | None) -> bool:
     if entry is None:
         return False
@@ -548,9 +539,9 @@ def _find_turn_boundary_cut(
 ) -> int:
     """Return the index of the first entry to keep (the cut point).
 
-    The cut is placed at a turn boundary — where the last removed entry is
-    NOT an assistant message with a pending tool call, and the first kept
-    entry is NOT a tool result that belongs to a removed tool call.
+    The cut is placed at a turn boundary — where the first kept entry is NOT a
+    tool result, so no assistant tool call (single or parallel) is separated
+    from any of its results.
 
     Strategy:
     1. Start from the token-budget cut (walk from the end, accumulate up to budget).
@@ -578,19 +569,19 @@ def _find_turn_boundary_cut(
         return 0
 
     # Walk backward from legacy_keep_start toward index 1 looking for a clean
-    # turn boundary. A clean boundary: the last removed entry (index cut-1)
-    # is NOT an assistant message that ends with a tool call whose result is
-    # the first kept entry.
+    # turn boundary. A clean boundary is one where the first kept entry is not
+    # a tool result: a kept history that opens with one has lost the assistant
+    # call it answers, and every provider rejects that transcript. Checking
+    # the first kept entry alone, rather than the (assistant call, result)
+    # pair, is what handles a parallel call -- the cut can land between two
+    # results of the same turn, where the last removed entry is a result too
+    # (#3077); stepping back until the first kept entry is the assistant call
+    # keeps the whole turn together.
     cut = legacy_keep_start
     while cut > 0:
-        last_removed = entries[cut - 1]
         first_kept = entries[cut] if cut < len(entries) else None
 
-        # Mid-turn: assistant tool call removed, tool result would be first kept.
-        if _is_assistant_tool_call_entry(last_removed) and _is_tool_result_entry(
-            first_kept
-        ):
-            # Move cut one step earlier to avoid splitting the pair.
+        if _is_tool_result_entry(first_kept):
             cut -= 1
             continue
 

@@ -9,6 +9,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [2026.9.22] - 2026-09-22
 
 ### Fixed
+- Session/compaction: `_find_turn_boundary_cut` stepped the cut back only when
+  the last removed entry was the assistant tool call *and* the first kept entry
+  was its result, so with parallel tool calls (`assistant(tool_calls) ->
+  result_1 -> result_2`) a cut landing between the results kept a history
+  that opened with `result_2` -- a transcript every provider rejects with 400
+  ("an assistant message with tool_calls must be followed by tool messages
+  responding to each id"). The rule is now on the kept side alone: while the
+  first kept entry is a tool result, step back, which reaches the assistant
+  call for one result or many, and for the Agent's flattened `[Tool result …]`
+  form too (#3077).
 - Slack: clicking Approve/Deny on a tool-call approval prompt that was posted
   as a top-level message (not already inside a thread) made the agent's reply
   post unthreaded instead of anchoring under the prompt it answered.
