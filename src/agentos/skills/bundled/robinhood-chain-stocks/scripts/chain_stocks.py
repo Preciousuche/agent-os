@@ -486,12 +486,22 @@ def inspect_token(
 
 
 def _resolve_target(
-    args: argparse.Namespace, timeout: float
+    args: argparse.Namespace, timeout: float, errors: dict[str, str]
 ) -> tuple[str, dict[str, Any] | None, list[dict[str, Any]]]:
-    """Return (address, list-entry-or-None, feeds) for the requested target."""
+    """Return (address, list-entry-or-None, feeds) for the requested target.
+
+    The feed directory is an optional price source, so its fetch goes through
+    ``_try`` like every other optional read: a network fault lands in
+    *errors* under ``feedDirectory`` and leaves ``feeds`` empty, which is the
+    case the "could not fetch the Chainlink feed directory" note in ``main``
+    describes. It used to propagate and cost the whole reading -- address,
+    the ``uiMultiplier()`` check, holder balance -- that the RPC had already
+    answered (#3290). The token list is not optional: without it there is no
+    address to read, so that failure still aborts.
+    """
     feeds: list[dict[str, Any]] = []
     if not args.no_price:
-        fetched = _http_json(FEEDS_URL, timeout)
+        fetched = _try(lambda: _http_json(FEEDS_URL, timeout), errors, "feedDirectory")
         if isinstance(fetched, list):
             feeds = fetched
 
@@ -546,8 +556,9 @@ def main(argv: list[str] | None = None) -> int:
         _write_stdout(json.dumps({"error": f"invalid rpc-url: {exc}"}, ensure_ascii=False) + "\n")
         return 0
 
+    read_errors: dict[str, str] = {}
     try:
-        address, listed, feeds = _resolve_target(args, args.timeout)
+        address, listed, feeds = _resolve_target(args, args.timeout, read_errors)
     except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
         _write_stdout(
             json.dumps({"query": args.query, "error": str(exc)}, ensure_ascii=False) + "\n"
@@ -560,6 +571,8 @@ def main(argv: list[str] | None = None) -> int:
     state = inspect_token(
         args.rpc_url, address, args.timeout, holder=args.holder, feed=feed, feeds=feeds
     )
+    if read_errors:
+        state.setdefault("readErrors", {}).update(read_errors)
     if (
         not args.no_price
         and "price" not in state

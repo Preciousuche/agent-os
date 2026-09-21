@@ -184,7 +184,10 @@ Chainlink's list is the source of truth.
 ## Notes
 
 - Only a subset of tokens have an official Chainlink feed; when none exists the
-  payload carries a note and omits `price` instead of guessing.
+  payload carries a note and omits `price` instead of guessing. If the feed
+  directory itself cannot be fetched, the reading still completes: `price` is
+  omitted, `readErrors.feedDirectory` carries the cause, and the note says the
+  price is unavailable, not disproven.
 - The public RPC has no archive data. Historical reads and `eth_getLogs` sweeps
   need a dedicated provider — pass `--rpc-url`.
 - Every failure path still prints JSON with an `error` or `readErrors` field;

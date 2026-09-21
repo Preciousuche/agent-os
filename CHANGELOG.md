@@ -7,6 +7,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Fixed
+- `robinhood-chain-stocks` skill: a fetch of the Chainlink feed directory that
+  failed at the network level (DNS, timeout, 5xx, a non-JSON body) propagated
+  out of `_resolve_target` and the run printed `{"query", "error"}`, losing the
+  on-chain reading the RPC had already answered -- address, the `uiMultiplier()`
+  Stock Token check, supply, holder balance. The note written for this case,
+  "could not fetch the Chainlink feed directory; price unavailable, not
+  disproven", was reachable only when the fetch succeeded with a non-list body.
+  The directory is an optional price source, so its fetch now goes through the
+  script's `_try` like every other optional read: the reading completes, `price`
+  is omitted, the note is attached and the cause is recorded in
+  `readErrors.feedDirectory`. A token-list failure still aborts, since without
+  it there is no address to read (#3290).
 - Slack: clicking Approve/Deny on a tool-call approval prompt that was posted
   as a top-level message (not already inside a thread) made the agent's reply
   post unthreaded instead of anchoring under the prompt it answered.
